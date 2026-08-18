@@ -1,0 +1,5 @@
+{
+    "markdown.validate.enabled": true,
+    "markdown.validate.fileLinks.enabled": true,
+    "markdown.validate.fragmentLinks.enabled": true
+}

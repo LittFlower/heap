@@ -1,0 +1,6 @@
+build/
+**/core
+**/core.*
+**/*.out
+**/*.log
+
