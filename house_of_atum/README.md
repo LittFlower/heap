@@ -2,9 +2,9 @@
 
 ## 结论
 
-- 适用范围：**2.26～2.29；2.30 起原始 count/entry 错位链失效**。
-- 原语/效果：重复 tcache free 与 fastbin→tcache stash 配合，让分配落到 victim-0x10 并修改原 chunk header。
-- 版本变化：2.29 起重复 free 方案需绕 key，但纯 edit-after-free 子原语仍成立；**2.30** 的 malloc 快路径改以 `counts[tc_idx] > 0` 为准，原链依赖的 entries/counts 错位失效。
+- 适用范围：**2.26～2.29；2.30 起原始的 count/entry 错位链失效**。
+- 原语/效果：靠重复 tcache free 配合 fastbin→tcache stash，让下一次分配落到 `victim-0x10`，也就是原 chunk 的 header 位置，从而改写它。
+- 版本变化：2.29 起如果还想走重复 free 就需要绕过 key 检查，但单纯的 edit-after-free 子原语仍然成立；到了 **2.30**，malloc 快路径改成检查 `counts[tc_idx] > 0`，原链依赖的 entries/counts 错位彻底失效。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -19,16 +19,16 @@
 
 ## 从源码看
 
-决定边界的不是 `tcache_get` 函数体，而是 `__libc_malloc` 调用它之前的条件：
+决定版本边界的不是 `tcache_get` 这个函数体本身，而是 `__libc_malloc` 在调用它之前做的判断：
 
 ```text
 2.26～2.29: tcache->entries[tc_idx] != NULL
 2.30 起:    tcache->counts[tc_idx] > 0
 ```
 
-Atum 让 count 已经归零时 entries 仍指向伪节点；前一分支继续返回伪 chunk，后一分支直接跳过 tcache。参考综述同一节展示的源码注释也写明 `glibc >= 2.30`，故不能把文字中的“2.31 之后”当作准确 tag 边界。
+Atum 的核心思路是让 count 已经归零，但 entries 仍然指向一个伪造节点。旧分支只看 entries 是否非空，所以还会继续返回伪 chunk；新分支改成看 count，一旦为零就直接跳过 tcache，不会再消费 entries 里的值。参考综述同一节展示的源码注释也写明是 `glibc >= 2.30`，所以不能把文字里出现的“2.31 之后”当成精确的 tag 边界。
 
-源码中仍能走到最终触发点，不等于旧利用链仍成立：投递方式、私有结构和控制流终点都要按附件 libc/ld 的 Build ID 复核。
+源码里仍然能走到这个最终触发点，不代表旧的利用链就还成立：投递方式、私有结构和控制流终点，都需要按附件 libc/ld 的 Build ID 重新核实。
 
 源码与背景：
 
@@ -47,8 +47,8 @@ BCTF 2018 原题从堆泄漏、unsorted 泄漏到 hook 终点的菜单级衔接�
 
 ## 迁移与调试
 
-1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。
-2. 把占位地址和 add/edit/free 顺序替换成题目能力。
-3. 在消费函数下断点，逐字段核对 size、对齐、safe-linking、FILE/link_map 私有布局。
+1. 先确认投递路径和最终触发点在目标 Build ID 上都确实存在。
+2. 把 PoC 里的占位地址和 add/edit/free 顺序，替换成题目实际给出的能力。
+3. 在消费函数处下断点，逐字段核对 size、对齐、safe-linking，以及 FILE/link_map 等私有结构的布局。
 
-负测试：把 C PoC 原样放到 glibc 2.30，第二次 `malloc(0x30)` 会取得普通 chunk，`header_as_user == a-0x10` 断言按预期失败。
+负面测试：把这份 C PoC 原样放到 glibc 2.30 上跑，第二次 `malloc(0x30)` 会拿到一个普通 chunk，`header_as_user == a-0x10` 这条断言会按预期失败，这正好验证了版本边界的判断。

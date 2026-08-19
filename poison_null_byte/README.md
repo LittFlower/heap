@@ -2,10 +2,10 @@
 
 ## 结论
 
-- 适用范围：**glibc 2.23～2.43**，但不是同一条 PoC 横跨全部版本。
-- 漏洞模型：相邻 chunk 的 `size` 最低字节只能被写成 `\x00`；通过清 `PREV_INUSE` 或缩小空闲 chunk，最终制造 overlap。
-- 与 House of Einherjar 的区别：Einherjar 通常直接伪造 `prev_size + fake prev chunk` 后向后合并；Poison Null Byte 的经典链强调“单 NUL 缩小 free chunk 后留下陈旧边界”，2.29 后版本又借 largebin 残留指针为 fake chunk 补齐 unlink 双链。
-- 前置能力：off-by-null；现代分支还需要能布置 large chunks，并允许对重新取出的 chunk 做低两字节修改。
+- 适用范围：**glibc 2.23～2.43**，但不是同一条 PoC 就能横跨所有版本。
+- 漏洞模型：只能把相邻 chunk 的 `size` 最低字节写成 `\x00`；借助清除 `PREV_INUSE` 或缩小空闲 chunk，最终制造出 overlap。
+- 与 House of Einherjar 的区别：Einherjar 通常是直接伪造出 `prev_size + fake prev chunk` 再向后合并；而 Poison Null Byte 的经典链路强调的是“用一个空字节缩小 free chunk，让它留下一段陈旧边界”，2.29 之后的版本又借助 largebin 残留的指针，给 fake chunk 补上一套能通过 unlink 检查的双链。
+- 前置能力：需要一次 off-by-null；现代分支还需要能布置 large chunk，并允许对重新取出的 chunk 做低两字节的修改。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -27,17 +27,17 @@
 | 2.29～2.42 | largebin residual-pointer fake chunk | [d6db68e](https://sourceware.org/git/?p=glibc.git;a=commit;h=d6db68e66dff25d12c3bc5641b60cbd7fb6ab44f) 又在 `_int_free` 向后合并前直接比较 `chunksize(prev) == prev_size(victim)`，旧链终止 |
 | 2.43 | 同一 residual-pointer 链，先初始化 tcache metadata | 新 tcache/TLS 初始化布局会影响 0x10000 低位对齐；先初始化再算 padding |
 
-现代 PoC 要把 fake chunk 地址的低两字节对齐到 `0x0010`，使残留的 libc/heap 高字节不变、只改 `\x10\x00` 就能让 `a->bk` 与 `b->fd` 回指它。演示通过 padding 消除低半字节爆破；真实题目若 heap 形状固定，可按实际地址重算。
+现代分支的 PoC 要把 fake chunk 地址的低两字节对齐到 `0x0010`，这样只要保持 libc/heap 的高字节不变，只改 `\x10\x00` 这两个字节，就能让 `a->bk` 与 `b->fd` 回指到它。演示中通过 padding 消除了低半字节需要爆破的部分；真实题目里如果堆形状是固定的，可以按实际地址重新计算。
 
-## 从源码看
+## 从源码角度理解
 
-关键路径是 `unlink_chunk`（旧版为 `unlink` 宏）以及 `_int_free` 中 `!prev_inuse(p)` 的 backward consolidation：
+关键路径是 `unlink_chunk`（旧版本里是 `unlink` 宏），以及 `_int_free` 中处理 `!prev_inuse(p)` 时的 backward consolidation：
 
-1. NUL 把 victim 的 `PREV_INUSE` 清零；
-2. `prev_size(victim)` 定位 fake previous chunk；
-3. 2.29+ 先校验 fake chunk 的 `chunksize` 与 victim 的 `prev_size` 相等；
-4. `unlink_chunk` 再校验 `fd->bk == p && bk->fd == p`；
-5. 合并块进入 unsorted bin，之后申请得到与仍在用 chunk 重叠的区域。
+1. 那个空字节把 victim 的 `PREV_INUSE` 位清零了；
+2. 通过 `prev_size(victim)` 就能定位到 fake previous chunk；
+3. 2.29 及之后的版本会先校验 fake chunk 的 `chunksize` 是否与 victim 的 `prev_size` 一致；
+4. `unlink_chunk` 接着还会校验 `fd->bk == p && bk->fd == p` 是否成立；
+5. 合并后的块会进入 unsorted bin，之后再次申请就能拿到一段与仍在使用的 chunk 重叠的内存。
 
 源码/基线：
 
@@ -62,7 +62,7 @@
 
 ## 调试观察点
 
-1. off-by-null 前后检查被缩小 chunk 的物理 size 和下一边界位置。
-2. 2.26+ 在 `unlink_chunk` 检查 fake chunk 末尾的 `next->prev_size`。
-3. 2.29+ 同时检查 victim 的 `prev_size`、fake chunk 的 `size`、`a->bk` 和 `b->fd` 四个关系。
-4. tcache 必须被尺寸绕开或预先处理；若 free 后意外进入 tcache，就不会走预期的 backward consolidation。
+1. 在 off-by-null 前后分别检查一下被缩小 chunk 的物理 size，以及下一个边界所在的位置。
+2. 2.26 及之后的版本会在 `unlink_chunk` 里检查 fake chunk 末尾的 `next->prev_size`。
+3. 2.29 及之后的版本还会同时检查 victim 的 `prev_size`、fake chunk 的 `size`，以及 `a->bk` 和 `b->fd` 这四者是否自洽。
+4. tcache 必须提前用尺寸绕开，或者做好相应的预处理；如果 free 之后意外落进了 tcache，就不会走到预期的 backward consolidation 逻辑。

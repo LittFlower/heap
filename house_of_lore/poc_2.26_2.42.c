@@ -1,22 +1,23 @@
 /*
  * 手法：House of Lore，直接伪造 smallbin 双链，适用于 glibc 2.26～2.42，x86-64。
  *
- * 漏洞模型：UAF 覆盖已进入 smallbin 的 victim->bk。
- * 成功效果：真实 `malloc(0x100)` 返回栈上 fake chunk 的 user 区。
+ * 漏洞模型：用一次 UAF 覆盖已经进入 smallbin 的 victim 的 bk 指针。
+ * 成功效果：真实的 `malloc(0x100)` 会返回栈上 fake chunk 的 user 区。
  *
- * 2.26 引入 tcache 后，单纯把 smallbin 尾指向 fake chunk 还不够：
- *   1. 先释放 7 个同尺寸 chunk 填满 tcache，使 victim 进入 unsorted；
- *   2. 把 victim 排入 smallbin，再耗尽 tcache；
- *   3. 第一次 malloc 从 smallbin 取真实 victim，并把后续 fake 双链节点
- *      stash 进 tcache；
- *   4. 第二次 malloc 从 tcache 返回最后一个 fake 节点。
+ * 2.26 引入 tcache 之后，单纯把 smallbin 尾部指向 fake chunk 还不够，
+ * 还需要按下面的顺序来构造：
+ *   1. 先释放 7 个同尺寸 chunk 填满 tcache，这样 victim 才会真正进入 unsorted；
+ *   2. 把 victim 排入 smallbin，再把 tcache 耗尽；
+ *   3. 第一次 malloc 从 smallbin 取出真实的 victim，同时会把后续的 fake
+ *      双链节点顺带 stash 进 tcache；
+ *   4. 第二次 malloc 直接从 tcache 里返回最后一个 fake 节点。
  *
- * 本 PoC 特别避免旧示例的假成功：旧代码即使 p4 仍在堆上，也会用一个
- * 任意跨度 memcpy 直接覆盖函数返回地址。这里直接断言 malloc 返回值就是
- * 预期的栈地址，绝不另写返回地址。
+ * 本 PoC 特意避开了旧示例那种假成功的写法：旧代码里即使 p4 其实还在堆上，
+ * 也会用一段跨度很大的 memcpy 直接覆盖函数返回地址，看起来"成功"了。这里
+ * 改成直接断言 malloc 的返回值就是预期的栈地址，不再另外写返回地址。
  *
- * 2.43 默认 tcache count 从 7 改为 16，fake 链长度也必须一起变化，请用
- * 2.43 版本请改用本目录的 `poc_2.43.c`。
+ * 2.43 默认 tcache count 从 7 改为 16，fake 链长度也要跟着变化；如果目标
+ * 是 2.43，请改用本目录的 `poc_2.43.c`。
  */
 
 #include <assert.h>

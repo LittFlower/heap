@@ -1,13 +1,13 @@
 /*
  * 手法：House of Lore，直接伪造 smallbin 双链，适用于 glibc 2.43，x86-64。
  *
- * 2.43 删除 fastbin，但 direct smallbin 链仍在；真正影响本 PoC 的变化是
- * 默认 tcache count 从 7 增为 16。必须准备 16 个填充块与至少 16 个可
- * stashing 的 fake 节点，否则 victim 会误入 tcache，或 fake 链尚未成为
- * tcache 头就被继续遍历。
+ * 2.43 删除了 fastbin，但直接操作 smallbin 链的思路不受影响；真正影响
+ * 本 PoC 的变化是默认 tcache count 从 7 增加到了 16。因此必须准备 16 个
+ * 填充块，并且 fake 链上至少要有 16 个可以被 stash 的节点，否则 victim
+ * 会误入 tcache，或者 fake 链还没被遍历完就已经成了 tcache 头。
  *
- * 成功判据严格为 `malloc(0x100) == 栈上 fake chunk user 地址`，不会用
- * 额外越界写篡改返回地址来伪造成功。
+ * 成功判据严格是 `malloc(0x100) == 栈上 fake chunk 的 user 地址`，不会靠
+ * 额外的越界写去篡改返回地址来伪装成功。
  */
 
 #include <assert.h>

@@ -3,9 +3,9 @@
 ## 结论
 
 - 适用范围：**glibc 2.23～2.43，x86-64**。
-- 前置能力：能够减小 top chunk 的 size，同时保留合法对齐、`PREV_INUSE` 和最低大小；随后能够申请超过伪 top 剩余空间的 chunk。
-- 效果：不直接调用 `free(old_top)`，而是让 `sysmalloc` 扩展 heap、建立 fencepost，并把旧 top 的可用部分交给 `_int_free`。它可制造指定大小的 unsorted/small/tcache chunk，也是 House of Orange 与 House of Tangerine 的底层步骤。
-- 与 House of Force 不同：这里不是把 top size 改成 `-1` 后计算超大 malloc。2.29 的 `top size > system_mem` 检查封住 Force，但没有删除 `sysmalloc` 合法释放旧 top 的机制。
+- 前置能力：能够减小 top chunk 的 size，同时仍保持合法对齐、`PREV_INUSE` 标记和最低尺寸；之后能够申请一个超过伪 top 剩余空间的 chunk。
+- 效果：不直接调用 `free(old_top)`，而是让 `sysmalloc` 去扩展 heap、建立 fencepost，再把旧 top 里可用的部分交给 `_int_free` 处理。这样就能制造出指定大小的 unsorted/small/tcache chunk，也是 House of Orange 与 House of Tangerine 底层依赖的一步。
+- 与 House of Force 的区别：这里不是把 top size 改成 `-1` 再申请一个超大 chunk。2.29 加入的 `top size > system_mem` 检查封住了 Force 的路子，但并没有删除 `sysmalloc` 合法释放旧 top 的机制，所以这条手法依然可用。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -18,38 +18,38 @@
 | 版本边界应如何理解 | 2.29 封的是 Force 的超大 top，不是合法缩小 top；2.43 fastbin 删除也不删 old-top 回收。属于持续适配。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
-## 从源码看
+## 从源码角度理解
 
-当 `_int_malloc` 发现 top 不够满足请求时进入 `sysmalloc`。若 heap 扩展后的新区域不能直接与旧 top 连续合并，`sysmalloc` 会：
+当 `_int_malloc` 发现 top 不够满足请求时，会进入 `sysmalloc`。如果 heap 扩展后的新区域不能直接与旧 top 连续合并，`sysmalloc` 会依次做这几件事：
 
-1. 从旧 top 尾部扣掉两份 chunk header 作为 fencepost；
-2. 把剩余的 `old_size` 向下对齐；
-3. 若该剩余大小至少为 `MINSIZE`，调用 `_int_free(av, old_top, 1)`。
+1. 从旧 top 的尾部扣掉两份 chunk header，用作 fencepost；
+2. 把剩下的 `old_size` 向下对齐；
+3. 如果这个剩余大小至少达到 `MINSIZE`，就调用 `_int_free(av, old_top, 1)` 把它释放掉。
 
-PoC 让旧 top 的末端仍落在 page 边界，并把它的物理大小精确缩成：
+PoC 让旧 top 的末端仍然落在 page 边界上，并把它的物理大小精确地缩成：
 
 ```text
 CHUNK_HDR_SZ + MALLOC_ALIGNMENT + wanted_freed_chunk
 ```
 
-其中在 x86-64 上 header 为 `0x10`、alignment 为 `0x10`，所以物理大小是 `0x170`，size 字段含 `PREV_INUSE` 时为 `0x171`。扣除 `0x20` fencepost 后得到 `wanted_freed_chunk=0x150`，接着 `malloc(0x140)` 会重新取回这段低地址旧 top。
+在 x86-64 上 header 是 `0x10`、alignment 是 `0x10`，所以物理大小算出来是 `0x170`，size 字段带上 `PREV_INUSE` 后就是 `0x171`。扣掉 `0x20` 的 fencepost 之后得到 `wanted_freed_chunk=0x150`，接下来 `malloc(0x140)` 就会重新取回这段位于低地址的旧 top。
 
 ## 版本变化
 
 | 版本 | 与本原语相关的变化 |
 |---|---|
-| 2.23～2.25 | 无 tcache；旧 top 通常先进入 unsorted bin |
-| 2.26～2.28 | 引入 tcache，但 sysmalloc 释放旧 top 的步骤仍在 |
-| 2.29 | top size 加入 `system_mem` 上界检查，House of Force 失效；本 PoC 使用缩小后的合法 top size，仍可用 |
-| 2.32 | safe-linking 只影响后续单链指针编码，不影响制造 free chunk |
-| 2.42 | large tcache/元数据重构改变后续投递选择，不改变 sysmalloc 的 fencepost/old-top free |
-| 2.43 | fastbin 路径删除；本 PoC 的 `0x150` chunk 可进入其他正常回收路径，原语仍可用 |
+| 2.23～2.25 | 没有 tcache，旧 top 通常会先落进 unsorted bin |
+| 2.26～2.28 | 引入了 tcache，但 sysmalloc 释放旧 top 的这一步依然保留 |
+| 2.29 | top size 加入了 `system_mem` 的上界检查，House of Force 因此失效；但本 PoC 用的是缩小后仍合法的 top size，所以不受影响，照样可用 |
+| 2.32 | safe-linking 只影响后续单链指针的编码方式，不影响制造 free chunk 这一步 |
+| 2.42 | large tcache 和元数据的重构改变了后续的投递选择，但不影响 sysmalloc 的 fencepost 处理和 old-top 释放 |
+| 2.43 | fastbin 路径被删除；本 PoC 中 `0x150` 大小的 chunk 会走其他正常的回收路径，原语依然可用 |
 
-这条链非常依赖 page 边界与当前 top 大小。PoC 先进行一次小分配，从紧邻的 top header 读出真实 size，再动态计算 padding；不能把其中的 `allocated_size` 当成所有题目的常数。
+这条链非常依赖 page 边界和当前 top 的实际大小。PoC 会先做一次小分配，从紧邻的 top header 里读出真实的 size，再动态计算 padding；不要把其中的 `allocated_size` 当成所有题目通用的常数。
 
 ## PoC
 
-- [`poc_2.23_2.43.c`](./poc_2.23_2.43.c)：动态探测 top，在保持 top 末端 page-aligned 的前提下把物理大小缩为 `0x170`，用更大 malloc 触发 `sysmalloc`，最后断言旧 top 已能被重新分配。
+- [`poc_2.23_2.43.c`](./poc_2.23_2.43.c)：动态探测 top 的实际状态，在保持 top 末端 page-aligned 的前提下把它的物理大小缩为 `0x170`，再用一次更大的 malloc 触发 `sysmalloc`，最后断言旧 top 确实已经能被重新分配出来。
 
 运行：
 
@@ -58,12 +58,12 @@ CHUNK_HDR_SZ + MALLOC_ALIGNMENT + wanted_freed_chunk
 ./tools/run_in_docker.sh 2.43 sysmalloc_free_old_top/poc_2.23_2.43.c
 ```
 
-## CTF 迁移提示
+## 迁移到实际 CTF 题目时的提示
 
-1. 泄露或预测 heap/top，计算页面低 12 位；ASLR 不会改变同一 page 内的低位。
-2. 保证伪 top 末端仍 page-aligned，这是 `sysmalloc` 内部断言的重要条件。
-3. `new_top_size` 必须保留 `PREV_INUSE`，并满足 `MINSIZE`；不要照搬 House of Force 的 `-1`。
-4. old top 被 `_int_free` 后去了哪个 bin 取决于大小、tcache 状态和版本；制造原语与最终投递要分开设计。
+1. 先泄露或预测出 heap/top 地址，算出页面低 12 位；ASLR 不会改变同一 page 内的低位部分。
+2. 要确保伪 top 的末端仍然是 page-aligned 的，这是 `sysmalloc` 内部断言会检查的关键条件。
+3. `new_top_size` 必须保留 `PREV_INUSE` 标记，并且满足 `MINSIZE`；不要照搬 House of Force 里用的 `-1`。
+4. old top 被 `_int_free` 释放后具体去哪个 bin，取决于大小、tcache 状态和 glibc 版本；建议把“制造原语”和“最终投递到哪个 bin”分开设计，不要混在一起考虑。
 
 ## 源码与补充资料
 

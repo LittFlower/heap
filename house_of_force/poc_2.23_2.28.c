@@ -1,11 +1,9 @@
 /*
- * 中文导读（CTF 版）
- *
- * 手法：house_of_force
- * 文件标注范围：2.23 ~ 2.28
- * 模拟漏洞：可覆盖 top chunk 的 size。
- * 核心流程：把 top->size 改成极大值，再申请 target-top-headers 的环绕距离，使新 top 落到目标前方。
- * 成功判据：下一次 malloc 返回 target；2.29 的 top size <= system_mem 检查使经典形式失效。
+ * 中文导读：本文件对应 house_of_force 手法，标注的版本范围是 2.23～2.28。
+ * 模拟的漏洞是可以覆盖 top chunk 的 size 字段；核心思路是把 top->size
+ * 改成一个极大值，再申请一段刚好等于「目标地址到旧 top」的环绕距离，
+ * 让新的 top 落在目标地址前面。成功判据是下一次 malloc 直接返回目标
+ * 指针；2.29 引入的 top size <= system_mem 检查会让这种经典写法失效。
  *
  * 阅读约定：malloc 返回的是 user data；源码里 p[-1] 通常是 size，p[-2]
  * 是 prev_size。所有故意的 UAF、越界和 double free 都是漏洞模拟，不是正常 C 用法。
@@ -13,11 +11,12 @@
  */
 
 /*
- * House of Force 本身只用 top 与目标的相对距离，ASLR 开启时只要已有堆泄漏
- * 和目标泄漏仍可工作。旧案例常把返回块导向 GOT，这要求关闭 RELRO；RELRO
- * 开启时可改选栈、.bss 或其他可写目标。把 top 推向栈的经典讨论见：
+ * House of Force 本身只依赖 top 与目标之间的相对距离，所以即使开着 ASLR，
+ * 只要已经拿到堆地址和目标地址的泄露，思路依然成立。早期案例常把返回块
+ * 导向 GOT，但那要求关闭 RELRO；RELRO 开启时可以改选栈、.bss 或其他可写
+ * 目标。把 top 推向栈的经典讨论见：
  * http://phrack.org/issues/66/10.html
- * 上游曾在 64 位 Ubuntu 14.04 与 Ubuntu 18.04 测试该 PoC。
+ * 上游曾在 64 位 Ubuntu 14.04 与 Ubuntu 18.04 上测试过这份 PoC。
  */
 
 #include <stdio.h>
@@ -30,7 +29,7 @@
 
 char bss_var[] = "This is a string that we want to overwrite.";
 
-int main(int argc , char* argv[])
+int main(void)
 {
 
 	intptr_t *p1 = malloc(256);
@@ -45,19 +44,19 @@ int main(int argc , char* argv[])
 	//------------------------
 
 	/*
-	 * 反算 evil_size。令 nb 为 request2size 后包含 header 的内部尺寸，则：
-	 *   新 top = 旧 top + nb；
-	 *   nb = 目标 chunk header - 旧 top；
-	 *   对齐前的申请大小满足：request + 2*sizeof(long) = nb。
-	 * 下一次 malloc 返回新 top 再加用户区偏移 2*sizeof(long)，所以要让用户
-	 * 指针落在 dest，最终得到：
-	 *   因而反推出本次申请参数：request = dest - old_top - 4*sizeof(long)。
-	 * 这里以 unsigned long 运算，目标位于旧 top 低地址时会自然发生模 2^64
-	 * 环绕；伪造为 -1 的巨大 top size 使该环绕距离仍被分配器接受。
+	 * 反算 evil_size 的思路：设 nb 为 request2size 之后、包含 chunk header
+	 * 的内部尺寸，那么新 top 的地址等于旧 top 加上 nb，同时 nb 也等于目标
+	 * chunk header 的地址减去旧 top；对齐前的申请大小满足
+	 * request + 2*sizeof(long) = nb。下一次 malloc 会把新 top 再加上用户区
+	 * 偏移 2*sizeof(long) 作为返回值，要让这个返回值恰好落在 dest 上，就能
+	 * 反推出本次申请参数：request = dest - old_top - 4*sizeof(long)。
+	 * 这里全部按 unsigned long 运算，当目标地址比旧 top 低时会自然发生
+	 * 模 2^64 的环绕；把 top size 伪造成 -1（也就是极大值）正是为了让
+	 * 分配器仍然接受这段环绕距离对应的超大申请。
 	 */
 	unsigned long evil_size = (unsigned long)bss_var - sizeof(long)*4 - (unsigned long)ptr_top;
 
-	void *new_ptr = malloc(evil_size);
+	malloc(evil_size);
 
 	void* ctr_chunk = malloc(100);
 
@@ -66,10 +65,11 @@ int main(int argc , char* argv[])
 	assert(ctr_chunk == bss_var);
 
 	/*
-	 * 若目标换成 malloc@GOT，计算完全相同：第一次受控大申请把 av->top
-	 * 推到 malloc_got_address-header；下一次普通申请从 remainder/top
-	 * 路径返回 header 之后的用户区，恰好等于 malloc_got_address。
-	 * 本文件改用 bss_var，避免把“RELRO 必须关闭”的特定代码执行终点误写成
-	 * House of Force 思想本身的必要条件。
+	 * 如果把目标换成 malloc@GOT，计算方式完全一样：第一次受控的大申请把
+	 * av->top 推到 malloc_got_address-header 这个位置；下一次普通申请
+	 * 走 remainder/top 路径，返回 header 之后的用户区，正好等于
+	 * malloc_got_address。本文件改用 bss_var 作为目标，是为了避免把
+	 * “利用 GOT 时必须先关闭 RELRO”这个特定代码执行终点的限制，误写成
+	 * House of Force 这个思想本身的必要条件。
 	 */
 }

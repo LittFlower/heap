@@ -2,12 +2,12 @@
 
 ## 结论
 
-- 目标原语：劫持 `_IO_list_all` 后，仅借助 glibc 自带合法 vtable，构造 **fd → 任意内存** 与 **任意内存 → fd** 两个方向的真实读写。
-- 适用范围：**x86-64 glibc 2.23～2.43**。2.23、2.24、2.38、2.39、2.40 与 2.43 已用对应运行时实跑；端点及 2.40 结构切换点均成功。
-- 前置条件：已知 libc 地址；能让 `_IO_list_all` 指向一份可控的 `FILE`；伪造对象、`_lock` 和读入目标可写；有可用 fd。
-- 它不是堆管理器原语，而是堆题常用的 FILE 消费链。堆漏洞负责把 fake FILE 投递进 `_IO_list_all`，Illusion 再把它升级成可重复读写。
+- 目标原语：在劫持 `_IO_list_all` 之后，只借助 glibc 自带的合法 vtable，就能构造出 **fd → 任意内存** 和 **任意内存 → fd** 这两个方向的真实读写能力。
+- 适用范围：**x86-64 glibc 2.23～2.43**。已经在 2.23、2.24、2.38、2.39、2.40 和 2.43 对应的运行时环境里实际跑通过，覆盖了版本区间两端以及 2.40 这个结构切换点，全部验证成功。
+- 前置条件：需要已经拿到 libc 基址，能把 `_IO_list_all` 指向一份自己可控的 `FILE` 结构体，同时保证伪造对象本身、`_lock` 字段和读写目标内存都是可写的，并且手头有一个可用的文件描述符。
+- 严格来说它不是堆分配器层面的原语，而是堆题里常见的一种 FILE 结构体利用链：堆漏洞负责把伪造的 FILE“投递”进 `_IO_list_all`（也就是让全局链表指针指向我们伪造好的这份 FILE），House of Illusion 再把这次投递升级成可以反复使用的读写能力。
 
-原始文章研究的是一份**定制过的 glibc 2.38**：题目给 `_wide_data` 路径补了额外 vtable 校验，使 Apple2 类路径失效。House of Illusion 的价值是完全绕开 fake wide vtable，改用 `_IO_file_jumps` 与同一合法表内部的 `-0x8` 位移；不能把“发现于 patched 2.38”误写成“仅 stock 2.38 可用”。
+需要说明的是，原始文章研究的对象是一份**经过题目定制的 glibc 2.38**：出题人给 `_wide_data` 路径额外补上了 vtable 校验，导致 House of Apple 2 那一类打法失效。House of Illusion 真正的价值在于完全绕开了伪造的 wide vtable，转而利用 `_IO_file_jumps` 这张合法表内部 `-0x8` 的位移来达到同样效果，所以不能把“这个手法是在被打了补丁的 2.38 上发现的”简化误写成“这个手法只能在没打补丁的 stock 2.38 上使用”。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -22,15 +22,15 @@
 
 ## 两条数据流
 
-### 原作者所谓 read primitive：fd → target
+### 原作者所谓的 read primitive：fd → target
 
-`_IO_flush_all` 对 fake FILE 调用 overflow 槽。令：
+`_IO_flush_all` 会对 fake FILE 调用它的 overflow 槽位。令：
 
 ```text
 fake.vtable = _IO_file_jumps - 0x8
 ```
 
-同一张表内的槽位就发生如下平移：
+这样一来，同一张表内的槽位就会发生如下平移：
 
 ```text
 shifted overflow -> real finish -> _IO_new_file_finish
@@ -49,11 +49,11 @@ fflush(NULL)
           -> read(fp->_fileno, target, length)
 ```
 
-所以原文的“read”是底层系统调用方向；按漏洞效果，它是**任意地址写**。
+所以原文说的“read”指的是底层系统调用的方向；从漏洞利用效果来看，这实际上是一个**任意地址写**原语。
 
-### 原作者所谓 write primitive：target → fd
+### 原作者所谓的 write primitive：target → fd
 
-令 vtable 保持为 `_IO_file_jumps`，构造：
+保持 vtable 不变，仍然是 `_IO_file_jumps`，然后构造：
 
 ```text
 _IO_write_base = target
@@ -61,13 +61,13 @@ _IO_write_ptr  = target + length
 _fileno        = output_fd
 ```
 
-链为 `_IO_new_file_overflow -> _IO_do_write -> _IO_file_write -> write(fd, target, length)`，按漏洞效果是**任意地址读/泄露**。
+这条链是 `_IO_new_file_overflow -> _IO_do_write -> _IO_file_write -> write(fd, target, length)`，从漏洞利用效果来看是**任意地址读 / 信息泄露**。
 
-## 为什么 glibc 2.24 的 vtable 校验不阻止它
+## 为什么 glibc 2.24 的 vtable 校验挡不住它
 
-glibc 2.24 的 `IO_validate_vtable` 要求 vtable 位于 `__libc_IO_vtables` section；它并不要求指针恰好等于某张表的起点。`_IO_file_jumps - 0x8` 仍在该 section 内，因此快速检查通过。PoC 没有把 vtable 指向 heap，也没有伪造函数指针。
+glibc 2.24 引入的 `IO_validate_vtable` 只要求 vtable 指针落在 `__libc_IO_vtables` 这个 section 里，并不要求它恰好等于某张表的起始地址。`_IO_file_jumps - 0x8` 依然落在这个 section 范围内，所以这道快速检查会直接通过。整个 PoC 既没有把 vtable 指向堆内存，也没有伪造任何函数指针，用的全是合法表内部的偏移。
 
-这里必须和 House of Apple 2 区分：Apple2 的 primary vtable 合法，但控制的是 `fp->_wide_data->_wide_vtable`；Illusion 不消费 fake wide vtable。
+这里有必要和 House of Apple 2 划清界限：Apple2 用的 primary vtable 本身是合法的，它控制的是 `fp->_wide_data->_wide_vtable` 这条 wide 路径；而 Illusion 完全不走 fake wide vtable 这条路。
 
 ## glibc 2.40：必须补 `_prevchain`
 

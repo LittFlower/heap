@@ -3,9 +3,14 @@
  *
  * 手法：house_of_tangerine
  * 文件标注范围：2.31
- * 模拟漏洞：可覆盖 top chunk 元数据；不依赖传统 House of Force 的巨大 top。
- * 核心流程：反复让 sysmalloc 处理受损 top，把旧 top 切成可进入 tcache 的块，再 poison 其 next 实现任意分配。
- * 成功判据：malloc 返回 target；2.32 起编码 next，2.42 大 tcache/头指针变化、2.43 fastbin 移除均需不同布局。
+ * 模拟漏洞：能够覆盖 top chunk 的元数据，不需要像传统 House of Force 那样
+ *   先把 top size 改成一个超大值。
+ * 核心流程：反复触发 sysmalloc 去处理被我们截短过的 top，让它把旧 top 当成
+ *   无法合并的 wilderness 顺手送进 tcache，然后对这个 tcache chunk 的 next
+ *   字段做 poisoning，换来一次任意地址分配。
+ * 成功判据：最终 malloc 返回 target。2.31 单独列出是因为 sysmalloc 和 top
+ *   的排布相比 2.26～2.30 有独立调整，但这里 next 字段依然是明文，不需要
+ *   额外的堆地址泄露。
  *
  * 阅读约定：malloc 返回的是 user data；源码里 p[-1] 通常是 size，p[-2]
  * 是 prev_size。所有故意的 UAF、越界和 double free 都是漏洞模拟，不是正常 C 用法。
@@ -44,27 +49,34 @@
 #define SIZE_3 (CHUNK_SIZE_3-CHUNK_HDR_SZ)
 
 /**
- * 上游曾在 glibc 2.27 与 2.31 的 x86-64、x86、AArch64 环境测试该布局。
+ * 上游作者在 glibc 2.27 和 2.31 上，针对 x86-64、x86、AArch64 三种架构都
+ * 验证过这套堆布局。
  *
- * House of Tangerine 是 House of Orange 的现代化分支：它保留破坏 top 的思想，
- * 但把旧 top 经 sysmalloc 内部 _int_free 送入 tcache，全程无需显式调用 free。
+ * House of Tangerine 可以看作 House of Orange 的现代化版本：它保留了破坏
+ * top 元数据的核心思路，但改成让旧 top 经由 sysmalloc 内部调用的 _int_free
+ * 间接送进 tcache，整个过程完全不需要我们自己显式调用 free。
  *
- * sysmalloc 对无法合并的旧 top（wilderness）执行 _int_free，源码参考：
+ * sysmalloc 对无法合并的旧 top（也就是 wilderness）会执行 _int_free，
+ * 具体源码可以参考：
  * https://elixir.bootlin.com/glibc/glibc-2.39/source/malloc/malloc.c#L2913
  *
- * 最终通过 tcache poisoning 让 malloc 返回一个满足 MALLOC_ALIGNMENT 的任意指针；
- * glibc 2.32 起 next 采用 safe-linking 编码，所以对应版本还需要堆地址泄漏。
+ * 最终目标是通过 tcache poisoning，让 malloc 返回一个满足 MALLOC_ALIGNMENT
+ * 对齐要求的任意指针；glibc 2.32 开始 next 字段要按 safe-linking 编码，
+ * 所以从这个版本起还需要先拿到一次堆地址泄露。
  *
- * 漏洞模型可以是同时具备正、负方向的越界写，例如负向 BOF 加正向 OOB；
- * 也可以是在编辑前一块时单独向高地址溢出，连续覆盖后续 top 元数据。
+ * 这里假设的漏洞模型，可以是同时具备正、负两个方向越界写的能力（比如一次
+ * 负向 BOF 配合一次正向 OOB），也可以是编辑前一个 chunk 时单纯往高地址方向
+ * 溢出，连续覆盖到后面的 top 元数据。
  *
- * 核心链需要 5 次 malloc 与 3 次越界写；为稳定探测 top size 的版本会多一次 malloc。
+ * 核心利用链本身只需要 5 次 malloc 和 3 次越界写；这份 PoC 为了稳定探测
+ * 当前 top size，额外多用了一次 malloc 作探针。
  *
- * 教学 PoC 先申请探针读取当前 top size，避免依赖启动时的细微堆余量；
- * 真题若能根据固定布局预测该值，就能删除探针并恢复为 5 次申请。
+ * 教学用的 PoC 先申请一个探针块，读出当前 top size，这样就不必依赖进程
+ * 启动时那点细微的堆余量；真题如果能从固定的堆布局直接预测出这个值，就可以
+ * 去掉探针，把总请求数恢复成 5 次。
  *
- * 特别感谢 pepsipu 设计 PicoCTF 2024 题目 “High Frequency Troubles”；
- * 该题启发了本技术对“无 free 堆破坏”场景的系统化整理。
+ * 特别感谢 pepsipu 设计的 PicoCTF 2024 题目《High Frequency Troubles》；
+ * 这道题启发了本手法对“无需 free 也能破坏堆”这类场景的系统化整理。
  */
 int main() {
   size_t size_2, *top_size_ptr, top_size, new_top_size, freed_top_size, vuln_tcache, target, *heap_ptr;

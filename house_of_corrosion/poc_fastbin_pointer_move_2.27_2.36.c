@@ -2,16 +2,17 @@
  * House of Corrosion 的 fastbin 指针搬运汇总模型。
  *
  * 版本范围：
- *   glibc 2.27～2.31：victim->fd 保存明文；
- *   glibc 2.32～2.36：victim->fd 使用 safe-linking；
- *   glibc 2.37 起：global_max_fast 缩成 uint8_t，无法再构造远端索引。
+ *   glibc 2.27～2.31：victim->fd 保存的是明文；
+ *   glibc 2.32～2.36：victim->fd 使用 safe-linking 编码；
+ *   glibc 2.37 起：global_max_fast 缩成了 uint8_t，无法再构造远端索引。
  *
- * 漏洞模型：攻击者已经放大 global_max_fast，能够反复修改同一个已释放
- * victim 的 size/fd，并让它临时出现在不同的远端 fastbin 头槽。
+ * 漏洞模型：假设攻击者已经放大了 global_max_fast，能够反复修改同一个
+ * 已释放 victim 的 size/fd 字段，让它临时出现在不同的远端 fastbin 头槽中。
  *
- * 成功效果：把“源槽”里的 libc 指针搬到可编辑中转区，修改后再搬到
- * “目标槽”。真实利用中的槽位位于 libc/ld；这里用数组表示连续 qword，
- * 从而把关键公式和指针流完整展开，不伪造某个发行版的固定地址。
+ * 成功效果：把“源槽”里的 libc 指针搬到可编辑的中转区，修改后再搬到
+ * “目标槽”。真实利用中这些槽位都位于 libc/ld 内，这里用数组表示连续的
+ * qword，从而把关键公式和指针流转完整展开出来，而不是伪造某个具体发行版
+ * 的固定地址。
  */
 
 #include <assert.h>
@@ -27,24 +28,24 @@ int main(void) {
   /* 数组第 0 项代表 main_arena.fastbinsY[0]。 */
   size_t fastbins_y[64] = {0};
 
-  /* 使用真实堆地址，使 2.32+ 的 fd 编码 key 具有真实地址语义。 */
+  /* 使用真实的堆地址，这样 2.32 起 fd 编码用的 key 才具有真实地址语义。 */
   size_t *victim = malloc(0x30);
   size_t *fd = &victim[0];
 
-  /* 演示使用的三个远端槽索引。 */
+  /* 演示中用到的三个远端槽索引。 */
   size_t source_index = 8;
   size_t relay_index = 24;
   size_t target_index = 40;
 
   /*
-   * x86-64 公式：
+   * x86-64 上的公式：
    *     fastbin_index(size) = (size >> 4) - 2
    *     size = index * 0x10 + 0x20
    *
-   * 如果手中是实际地址 target，而不是数组索引，则：
+   * 如果手里拿到的是实际地址 target，而不是数组索引，就换算成：
    *     delta = target - &main_arena.fastbinsY[0]
    *     size = 2 * delta + 0x20
-   *     request = (size & ~7) - 0x10        // 换回用户请求大小
+   *     request = (size & ~7) - 0x10        // 换回 malloc 的用户请求大小
    */
   size_t source_size = source_index * 0x10 + 0x20;
   size_t relay_size = relay_index * 0x10 + 0x20;
@@ -129,37 +130,39 @@ int main(void) {
 /*
  * ======================== 真实链迁移伪代码 ========================
  *
- * 一、原版 glibc 2.27，绑定作者使用的 Ubuntu 18.04 Build ID：
+ * 一、原版 glibc 2.27，基于原作者使用的 Ubuntu 18.04 Build ID：
  *
- *     准备可反复编辑的 freed victim、unsorted victim 和检查用安全值区域；
- *     猜 libc 低四位；
- *     用 2.27 的 unsorted bin attack 放大 global_max_fast；
- *     对每个 libc 目标计算：
+ *     先准备好可以反复编辑的 freed victim、unsorted victim，以及一块用来
+ *     存放检查用安全值的区域；接着猜出 libc 地址的低四位；再用 2.27 上
+ *     还能用的 unsorted bin attack 放大 global_max_fast。
+ *     对每一个想搬运的 libc 目标，都按下面的公式算出对应的 chunk size：
  *         delta = target - main_arena.fastbinsY；
  *         chunk_size = 2 * delta + 0x20；
- *         malloc_request = (chunk_size & ~7) - 0x10； // 换回用户请求大小
- *     按“源槽 -> 可编辑中转区 -> 目标槽”搬运 __morecore 等指针；
- *     修改 stderr 的 flags/write_ptr/buf_base/buf_end/vtable；
- *     使用 2.27 仍会消费的 FILE+0xe0 旧 allocate 回调；
- *     制造 largebin/NON_MAIN_ARENA 断言，让 stderr 进入真实消费路径；
- *     最终必须验证回调参数或控制流，不能只以崩溃为成功。
+ *         malloc_request = (chunk_size & ~7) - 0x10； // 换回 malloc 的用户请求大小
+ *     然后按照“源槽 -> 可编辑中转区 -> 目标槽”的顺序，把 __morecore 等
+ *     指针搬运过去；修改 stderr 的 flags、write_ptr、buf_base、buf_end
+ *     和 vtable 字段；利用 2.27 仍然会消费的 FILE+0xe0 旧版 allocate 回调，
+ *     再制造出 largebin/NON_MAIN_ARENA 断言，让 stderr 真正走到消费路径。
+ *     最后一定要验证回调收到的参数或实际的控制流是否符合预期，不能只
+ *     看程序是否崩溃就当作成功。
  *
- * 二、Addendum glibc 2.29，绑定作者使用的 Ubuntu 19.04 Build ID：
+ * 二、Addendum glibc 2.29，基于原作者使用的 Ubuntu 19.04 Build ID：
  *
- *     至少取得约 11 字节连续 WAF；
- *     用 tcache poisoning 代替已经加固的旧 unsorted 写；
- *     覆盖 global_max_fast，建立相对写和指针搬运；
- *     把 _rtld_global._dl_ns[0]._ns_loaded 搬到 namespace 1；
- *     清 namespace 0，并把 libc link_map.l_ns 改成 1；
- *     让 _IO_vtable_check 走“非默认命名空间”返回分支；
- *     stderr.vtable 指向堆上的 fake vtable；
- *     按附件反汇编重新选择 gadget，并验证寄存器与 system 参数。
+ *     这一版至少需要约 11 字节的连续 WAF 能力。先用 tcache poisoning
+ *     代替已经被加固的旧版 unsorted 写；再覆盖 global_max_fast，建立起
+ *     相对写和指针搬运能力；然后把 _rtld_global._dl_ns[0]._ns_loaded
+ *     搬到 namespace 1，清空 namespace 0，并把 libc 的 link_map.l_ns
+ *     改成 1，这样就能让 _IO_vtable_check 走到“非默认命名空间”对应的
+ *     放行分支；最后让 stderr.vtable 指向堆上伪造的 vtable。实际操作时
+ *     还要按照附件反汇编重新挑选合适的 gadget，并核对寄存器状态和
+ *     system 调用的参数是否正确。
  *
  * 三、真正的版本边界：
  *
- *     2.28 删除旧 `_IO_strfile` 回调，因此 2.27 完整链先失去终点；
- *     2.32 起必须像本文件第二段一样正确编码 victim->fd；
- *     2.37 把 global_max_fast 缩成 uint8_t，最大物理 size 只有 0xf0，
- *     最远只能索引 fastbinsY+0x68 附近，无法再访问远端 libc/ld 槽；
- *     这时核心投递思想已经失效，不是再调一个偏移即可恢复。
+ *     2.28 删除了旧版 `_IO_strfile` 回调，所以 2.27 的完整链首先在这里
+ *     失去了最终触发点；2.32 起就必须像本文件第二段那样正确编码
+ *     victim->fd 才能继续搬运；2.37 把 global_max_fast 缩成了 uint8_t，
+ *     最大物理 size 只有 0xf0，能索引到的范围最远也就在 fastbinsY+0x68
+ *     附近，已经碰不到远端的 libc/ld 槽了。到这一步，核心投递思路已经
+ *     彻底失效，不是简单调一下偏移就能恢复的。
  */

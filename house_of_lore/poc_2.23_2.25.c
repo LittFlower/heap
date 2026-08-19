@@ -1,19 +1,21 @@
 /*
- * 手法：House of Lore，直接伪造 smallbin 双链，适用于 glibc 2.23～2.25，x86-64。
+ * 手法：House of Lore，直接伪造 smallbin 的双向链表，适用于 glibc
+ * 目标为 2.23～2.25，x86-64。
  *
- * 漏洞模型：UAF 覆盖已进入 smallbin 的 victim->bk。
- * 成功判据：第二次 `malloc(0x100)` 必须等于栈上 fake_first+0x10。
+ * 漏洞模型：用一次 UAF 覆盖已经进入 smallbin 的 victim 的 bk 指针。
+ * 成功判据：第二次调用 `malloc(0x100)` 时，返回值必须等于栈上 fake_first+0x10。
  *
  * 第一次 smallbin unlink：
  *   victim->bk = fake_first，且 fake_first->fd == victim
- *   => 返回真实 victim，并令 bin->bk = fake_first
+ *   => 返回真实的 victim，并把 bin->bk 改成 fake_first
  *
  * 第二次 smallbin unlink：
  *   fake_first->bk = fake_second，且 fake_second->fd == fake_first
  *   => 返回 fake_first 的 user 区
  *
- * 本文件已删除旧 how2heap 示例末尾“无论 malloc 返回哪里，都按栈帧差值
- * 直接 memcpy 改返回地址”的演示，只保留能证明堆管理器原语的断言。
+ * 本文件已经删掉了旧 how2heap 示例末尾那种“不管 malloc 返回到哪里，都直接
+ * 按栈帧差值 memcpy 改写返回地址”的演示写法，只保留能证明堆管理器原语本身
+ * 生效的断言。
  */
 
 #include <assert.h>

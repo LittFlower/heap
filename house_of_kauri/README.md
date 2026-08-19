@@ -2,9 +2,9 @@
 
 ## 结论
 
-- 适用范围：**2.26～2.41；2.42 全 bin 扫描硬封“改 size 换 tcache bin”的 Kauri 绕过**。若还能清 key、合并或直接改 metadata，可用其他 dup 手法取得相似输出，但已增加前置能力。
-- 原语/效果：修改已释放 chunk 的 size，再 free 到另一条 tcache bin，使两个 bin 同时返回同一地址。
-- 版本变化：2.29～2.41 key 命中时只扫描当前 tc_idx，改 size 可绕过；2.32 safe-linking 不影响单节点链；2.42 改为扫描全部 TCACHE_MAX_BINS。
+- 适用范围：**glibc 2.26～2.41**。从 2.42 开始，double free 校验会扫描全部 tcache bin，Kauri 这种“改 size 换 bin”的绕过方式被彻底堵死；如果还能清空 key、触发合并或直接篡改 metadata，可以换用其他 double free 手法达到类似效果，但那样需要更强的前置能力。
+- 原语/效果：先改写一个已释放 chunk 的 size 字段，再把它 free 到另一条 tcache bin 里，这样两条 bin 会先后把同一个地址分配出去，形成重叠。
+- 版本变化：2.29～2.41 期间，key 校验命中时只会扫描新 size 对应的那一个 tc_idx，所以改 size 能绕过检测；2.32 引入的 safe-linking 只处理多节点链表的加密，这里链上只有一个节点，不受影响；2.42 起改成遍历所有 TCACHE_MAX_BINS，这个绕过方式就失效了。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -19,9 +19,9 @@
 
 ## 从源码看
 
-对比 glibc-2.41 tcache_double_free_verify(e, tc_idx) 与 2.42 的全 bin 循环。
+对比 glibc 2.41 的 `tcache_double_free_verify(e, tc_idx)` 和 2.42 改成的全 bin 循环，就能看清这条绕过路径具体是怎么被堵上的。
 
-源码中仍能走到最终触发点，不等于旧利用链仍成立：投递方式、私有结构和控制流终点都要按附件 libc/ld 的 Build ID 复核。
+源码里仍然能走到最终触发点，不代表旧的利用链还成立：投递方式（也就是怎么把伪造数据送到目标位置）、私有结构和控制流终点，都要按题目附件 libc/ld 的实际 Build ID 重新核对。
 
 源码与背景：
 
@@ -33,12 +33,12 @@
 
 ## PoC
 
-- [`poc_2.26_2.41.c`](./poc_2.26_2.41.c)：真实 malloc/free 微型 PoC
+- [`poc_2.26_2.41.c`](./poc_2.26_2.41.c)：用真实的 malloc/free 调用跑一遍完整流程的微型 PoC。
 
-C 文件验证真实堆管理器路径；需要题目专属布局时，直接按 PoC 末尾的中文注释迁移，不能把局部原语成功当成脱离题目的 RCE。
+这个 C 文件走的是真实堆管理器的代码路径；如果题目有专属的堆布局，直接参考 PoC 末尾的中文注释去迁移即可，但要注意不能把这里验证出的局部原语成功，当成脱离具体题目就能直接执行代码的 RCE。
 
 ## 迁移与调试
 
-1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。
-2. 把占位地址和 add/edit/free 顺序替换成题目能力。
-3. 在消费函数下断点，逐字段核对 size、对齐、safe-linking、FILE/link_map 私有布局。
+1. 先确认投递路径和最终触发点在目标程序的 Build ID 中都确实存在。
+2. 把占位地址，以及 add/edit/free 的调用顺序，替换成题目实际提供的能力。
+3. 在真正读取这些字段的消费函数处下断点，逐个字段核对 size、对齐、safe-linking 编码、FILE/link_map 私有结构布局是否符合预期。

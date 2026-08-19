@@ -32,7 +32,7 @@ int main()
 
 	int *a = calloc(1,8);
 	int *b = calloc(1,8);
-	int *c = calloc(1,8);
+	calloc(1,8); // 保护块防止 b 与 top 合并。
 
  // 第一次释放 a：它将成为 fastbin 单链表的表头。
 	free(a);

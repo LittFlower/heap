@@ -2,10 +2,10 @@
 
 ## 结论
 
-- `_IO_mem_sync` 双写：**glibc 2.24～2.43** 可从合法 `__libc_IO_vtables` 内的偏移 vtable 到达；函数本身在 2.23 也存在，但 2.23 尚无 vtable whitelist，通常不必使用这条绕法。
-- 原作者发布的完整 House of Error exploit：**glibc 2.35 特定构建**。
-- 原始投递链用现代 largebin attack 覆盖 `stderr`，再经 `__malloc_assert→fflush(stderr)` 触发。largebin 投递只到 2.41，专用 assert 触发只到 2.35；2.36+ 必须另找标准流消费点，2.42+ 还必须另找任意写投递。
-- 前置能力：libc 地址泄露、可控 fake FILE、能把标准流指针或链投向 fake FILE；是否需要堆地址泄露取决于具体触发方式。
+- `_IO_mem_sync` 双写：**glibc 2.24～2.43** 都能从合法 `__libc_IO_vtables` 段内的偏移 vtable 到达；这个函数在 2.23 也存在，但当时还没有 vtable whitelist，通常用不上这条绕法。
+- 原作者发布的完整 House of Error exploit 针对的是：**glibc 2.35 特定构建**。
+- 原始的投递链是用当时的 largebin attack 覆盖 `stderr`，再通过 `__malloc_assert→fflush(stderr)` 触发。这条 largebin 投递路径只延续到 2.41，专用的 assert 触发方式只延续到 2.35；2.36 之后要另外找标准流消费点，2.42 之后连任意写投递也得重新想办法。
+- 前置能力：需要 libc 地址泄露、一个可控的 fake FILE，以及能把标准流指针或链条指向这个 fake FILE 的手段；是否还需要堆地址泄露，取决于具体用哪种方式触发。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -27,23 +27,23 @@
 *mp->sizeloc = fp->_IO_write_ptr - fp->_IO_write_base;
 ```
 
-所以 fake FILE 可同时得到：
+所以只要控制好 fake FILE，就能同时拿到两次写：
 
-- `where1 = bufloc`，写入 `what1 = _IO_write_base`；
-- `where2 = sizeloc`，写入受减法约束的 `what2 = _IO_write_ptr - _IO_write_base`。
+- `where1 = bufloc`，写入的内容是 `what1 = _IO_write_base`；
+- `where2 = sizeloc`，写入的内容是受减法约束的 `what2 = _IO_write_ptr - _IO_write_base`。
 
-第二次写不是完全独立的 8-byte arbitrary write。还要令 `_IO_write_ptr != _IO_write_end`，否则函数会先进入 `_IO_str_overflow`，带来额外字段和分配约束。
+注意第二次写并不是完全独立的 8 字节任意写。另外还要保证 `_IO_write_ptr != _IO_write_end`，否则函数会先走进 `_IO_str_overflow`，带来额外的字段和分配约束。
 
 ## 合法偏移 vtable
 
-x86-64 `_IO_jump_t` 中常用槽位相对表首地址为：`overflow=0x18`、`uflow=0x28`、`xsputn=0x38`、`sync=0x60`。若消费点调用 `uflow`，让它落到 `_IO_mem_sync`：
+x86-64 `_IO_jump_t` 里几个常用槽位相对表首地址的偏移分别是：`overflow=0x18`、`uflow=0x28`、`xsputn=0x38`、`sync=0x60`。如果消费点调用的是 `uflow`，想让它落到 `_IO_mem_sync`，可以这样算：
 
 ```text
 fake_vtable = _IO_mem_jumps + (0x60 - 0x28)
             = _IO_mem_jumps + 0x38
 ```
 
-这个地址仍位于 glibc 的合法 vtable section，能通过 2.24 引入的 `IO_validate_vtable`。不同消费点要用“目标槽位 - 被调用槽位”重新计算，不能照抄 `+0x38`。
+这个地址仍然落在 glibc 的合法 vtable section 内，能通过 2.24 引入的 `IO_validate_vtable` 校验。换成其他消费点时要按“目标槽位 - 被调用槽位”重新算一遍，不能照抄这里的 `+0x38`。
 
 ## 从源码看
 
@@ -53,13 +53,13 @@ fake_vtable = _IO_mem_jumps + (0x60 - 0x28)
 - [2.24 vtable validation 提交](https://sourceware.org/git/?p=glibc.git;a=commit;h=db3476aff19b75c4fdefbe65fcd5f0a90588ba51)
 - [2.36 简化 `__malloc_assert`、删除旧 stdio 路径](https://sourceware.org/git/?p=glibc.git;a=commit;h=ac8047cdf326504f652f7db97ec96c0e0cee052f)
 
-2.43 把 `_IO_mem_jumps` 收进 `libio/vtables.c` 的表数组，但 `sync` 槽及上述两次写仍在。**最终触发点存在不代表原始 2.35 完整链仍存在**。
+2.43 把 `_IO_mem_jumps` 收进了 `libio/vtables.c` 的表数组里，但 `sync` 槽和上述两次写依然存在。**最终触发点存在，不代表原始 2.35 那条完整链路仍然可用**。
 
 ## PoC
 
-- [`poc_mem_sync_2.24_2.43.c`](./poc_mem_sync_2.24_2.43.c)：可执行微型 PoC。它从真实 `open_memstream` 取得 `_IO_mem_jumps`，把 vtable 合法偏移到 `sync-uflow`，再调用 `__uflow`，用 assert 验证两次写。
+- [`poc_mem_sync_2.24_2.43.c`](./poc_mem_sync_2.24_2.43.c)：可执行的微型 PoC。它从真实的 `open_memstream` 取得 `_IO_mem_jumps`，把 vtable 合法偏移到 `sync-uflow`，再调用 `__uflow`，最后用 assert 验证这两次写是否成功。
 
-PoC 直接使用真实 memstream 的扩展对象以隔离最终触发点，不虚构题目级 largebin/标准流投递能力；原始 2.35 端到端菜单 exploit 与附件在 FSOPAgain 仓库 `poc3/`。
+这份 PoC 直接借用真实 memstream 的扩展对象，只为了单独隔离出最终触发点，并不虚构题目级别的 largebin/标准流投递能力；原始 2.35 那套端到端菜单 exploit 和附件在 FSOPAgain 仓库的 `poc3/` 目录下。
 
 ```bash
 ./tools/run_in_docker.sh 2.35 house_of_error/poc_mem_sync_2.24_2.43.c
@@ -68,7 +68,7 @@ PoC 直接使用真实 memstream 的扩展对象以隔离最终触发点，不�
 
 ## 迁移到题目
 
-1. 按 Build ID 确认 `_IO_mem_jumps`、`FILE` 和 `_IO_strfile` 布局；x86-64 常见 `bufloc/sizeloc` 偏移是 `0xf0/0xf8`。
-2. 先确定实际触发的是 `overflow/uflow/xsputn/...` 哪个槽，再计算 vtable 偏移。
-3. 分开选择投递与触发：2.35 可参考原始 `stderr + __malloc_assert`；2.36～2.41 可保留 largebin 投递但需换正常 IO 触发；2.42～2.43 两者都要替换。
-4. 下断点到 `_IO_mem_sync`，逐项确认 `write_base/write_ptr/write_end/bufloc/sizeloc`，再接 exit handler、cookie、GOT 或题目自身回调等终点。
+1. 按题目的 Build ID 确认 `_IO_mem_jumps`、`FILE` 和 `_IO_strfile` 的实际布局；x86-64 上常见的 `bufloc/sizeloc` 偏移是 `0xf0/0xf8`。
+2. 先确定实际触发的是 `overflow/uflow/xsputn/...` 中的哪一个槽，再据此计算 vtable 偏移。
+3. 投递和触发要分开选择：2.35 可以参考原始的 `stderr + __malloc_assert`；2.36～2.41 可以保留 largebin 投递，但要换成正常的 IO 触发方式；2.42～2.43 这两部分都需要替换。
+4. 在 `_IO_mem_sync` 处下断点，逐项核对 `write_base/write_ptr/write_end/bufloc/sizeloc` 的值，再接上 exit handler、cookie、GOT 或题目自身回调等最终目标。

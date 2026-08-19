@@ -31,7 +31,7 @@ int main()
 
 	int *a = calloc(1,8);
 	int *b = calloc(1,8);
-	int *c = calloc(1,8);
+	calloc(1,8); // 保护块防止 b 与 top 合并。
 
 	for (int i=0; i<7; i++) {
 		free(ptrs[i]);

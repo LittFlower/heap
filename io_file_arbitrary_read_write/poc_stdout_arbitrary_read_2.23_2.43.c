@@ -1,8 +1,8 @@
 /*
- * 覆盖 stdout 字段获得任意地址读，适用于 glibc 2.23～2.43 / x86-64。
+ * 覆盖 stdout 字段来获得任意地址读，适用于 glibc 2.23～2.43 / x86-64。
  *
- * 输入原语：可以覆盖 libc 中的 stdout 对象。
- * 成功效果：fflush 把 secret 指向的进程内存直接写到 fd 1。
+ * 前置能力：能够覆盖 libc 中的 stdout 对象。
+ * 效果：fflush 会把 secret 指向的那段进程内存直接写到 fd 1。
  */
 
 #include <assert.h>

@@ -40,7 +40,7 @@ int main()
 
     // 依次布置 tcache 填充块、前块 prev、victim a 与防合并保护块。
     intptr_t *x[7];
-    for(int i=0; i<sizeof(x)/sizeof(intptr_t*); i++){
+    for(int i=0; i<7; i++){
         x[i] = malloc(0x100);
     }
     intptr_t *prev = malloc(0x100);

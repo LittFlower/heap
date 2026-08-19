@@ -2,9 +2,9 @@
 
 ## 结论
 
-- 适用范围：**2.23～2.35；2.36 起专属触发器失效**。
-- 原语/效果：故意触发 malloc assert，以 stderr 的 IO 刷新触发 fake FILE/FSOP。
-- 版本变化：2.35 及以前 `__malloc_assert` 会输出并刷新 stdio；2.36 重写后移除该 IO 操作。fake wide FILE 还要按 2.23～2.29 / 2.30 / 2.31+ 的 `0x130 / 0xf0 / 0xe0` 三种 `_wide_vtable` 字段偏移分开。
+- 适用范围：**2.23～2.35；2.36 起专属的触发器失效**。
+- 原语/效果：故意触发 malloc 的内部 assert，借助它对 stderr 做的 IO 刷新，把伪造的 FILE 结构体拉进 FSOP 触发链。
+- 版本变化：2.35 及之前，`__malloc_assert` 在报错时会输出信息并刷新 stdio；2.36 重写了这部分逻辑，去掉了这次 IO 操作。此外，伪造的 wide FILE 还要按 2.23～2.29 / 2.30 / 2.31+ 这三个区间分别使用 `0x130 / 0xf0 / 0xe0` 三种不同的 `_wide_vtable` 字段偏移，不能混用。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -19,7 +19,7 @@
 
 ## 从源码看
 
-对比 glibc-2.35/2.36 `malloc/malloc.c` 的 `__malloc_assert`，并读取 `libio/libio.h` 的 `_IO_wide_data`。提交 [`ac8047c`](https://sourceware.org/git/?p=glibc.git;a=commit;h=ac8047cdf326504f652f7db97ec96c0e0cee052f) 进入 2.36，用 `__libc_message` 代替复杂的 `__fxprintf + fflush(stderr)`，这是 Kiwi 触发器的硬边界。2.30 的 [`09e1b0e`](https://sourceware.org/git/?p=glibc.git;a=commit;h=09e1b0e3f6facc1af2dbcfef204f0aaa8718772b) 与 2.31 的 [`70c6e15`](https://sourceware.org/git/?p=glibc.git;a=commit;h=70c6e15654928c603c6d24bd01cf62e7a8e2ce9b) 分别造成两个 wide-data 布局边界。
+对比 glibc 2.35 和 2.36 版本 `malloc/malloc.c` 里的 `__malloc_assert`，再结合 `libio/libio.h` 中 `_IO_wide_data` 的定义一起看。提交 [`ac8047c`](https://sourceware.org/git/?p=glibc.git;a=commit;h=ac8047cdf326504f652f7db97ec96c0e0cee052f) 进入 2.36 之后，改用 `__libc_message` 代替了原来那套 `__fxprintf + fflush(stderr)` 的复杂逻辑，这就是 Kiwi 触发器失效的硬边界。另外，2.30 的 [`09e1b0e`](https://sourceware.org/git/?p=glibc.git;a=commit;h=09e1b0e3f6facc1af2dbcfef204f0aaa8718772b) 和 2.31 的 [`70c6e15`](https://sourceware.org/git/?p=glibc.git;a=commit;h=70c6e15654928c603c6d24bd01cf62e7a8e2ce9b) 各自带来了一次 wide-data 布局变化，也就是前面提到的两个版本边界的来源。
 
 源码中仍能走到最终触发点，不等于旧利用链仍成立：投递方式、私有结构和控制流终点都要按附件 libc/ld 的 Build ID 复核。
 
@@ -34,13 +34,13 @@
 
 ## PoC
 
-- [`poc_malloc_assert_trigger_2.23_2.35.c`](./poc_malloc_assert_trigger_2.23_2.35.c)：真实覆盖 top size，触发 sysmalloc 断言，并用缓冲 fopencookie 严格观察源码中的 `fflush(stderr)`；已实测 2.23/2.35，同一程序在 2.36 不进回调并退出 134。
+- [`poc_malloc_assert_trigger_2.23_2.35.c`](./poc_malloc_assert_trigger_2.23_2.35.c)：真实覆盖 top size，触发 sysmalloc 的断言，并用带缓冲的 fopencookie 严格观察源码里的那次 `fflush(stderr)`；已经在 2.23 和 2.35 上实测通过，同一份程序在 2.36 上不会进入回调，会以退出码 134 结束。
 
-C 文件末尾列出三段 wide-data 偏移和 stderr fake FILE 伪代码。可执行主体隔离验证 Kiwi 专属触发器；最终回调、ROP 与投递仍按题目替换。
+C 文件末尾列出了三段 wide-data 偏移和 stderr fake FILE 的伪代码。这个可执行主体只用来隔离验证 Kiwi 专属的触发器，最终的回调、ROP 链和投递方式仍然要按具体题目替换。
 
 ## 迁移与调试
 
-1. 覆盖 top size 后让 sysmalloc 的 old-top invariant 失败；仅制造普通 `malloc_printerr` 不等价于进入 `__malloc_assert`。
-2. 控制的是 `stderr` 指向的 FILE；`__fxprintf(NULL,...)` 会选择 stderr，随后旧源码显式 `fflush(stderr)`。
-3. 按 2.23～2.29 / 2.30 / 2.31～2.35 选择 wide-data ABI，并确保 primary vtable 合法。
-4. 2.36+ 即使 Apple2/Apple3 最终触发点仍存在，也不能再靠 Kiwi 的 malloc assert 触发它们。
+1. 覆盖 top size，让 sysmalloc 里的 old-top 不变量检查失败；只是触发一次普通的 `malloc_printerr` 并不等价于真正进入 `__malloc_assert`。
+2. 这里控制的是 `stderr` 指向的那份 FILE；`__fxprintf(NULL,...)` 会选中 stderr，随后旧版源码里会显式调用 `fflush(stderr)`。
+3. 按 2.23～2.29 / 2.30 / 2.31～2.35 三个区间分别选用对应的 wide-data ABI，并确保 primary vtable 本身合法。
+4. 到了 2.36 及以后，即使 Apple2/Apple3 用到的那些最终触发点依然存在，也不能再靠 Kiwi 的 malloc assert 去触发它们了。

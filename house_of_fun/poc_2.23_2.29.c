@@ -1,16 +1,16 @@
 /*
- * House of Fun 是旧 largebin attack 的历史命名。本文件复用同一条真实
- * glibc 路径：请重点观察 2.30 新增检查前，四个双链/nextsize 指针如何
- * 参与写入。成功判据与下方原 PoC 相同。
+ * House of Fun 是旧版 largebin attack 的历史命名，本文件走的是同一条
+ * 真实 glibc 路径。请重点观察 2.30 引入检查之前，fd/bk/fd_nextsize/
+ * bk_nextsize 这四个链表指针分别是怎样参与写入的。成功判据与下方原始
+ * PoC 相同。
  */
 /*
- * 中文导读（CTF 版）
- *
- * 手法：large_bin_attack
- * 文件标注范围：2.23 ~ 2.29
- * 模拟漏洞：UAF 改写已入 largebin 节点的 bk_nextsize。
- * 核心流程：插入更小 victim 时走最小节点分支，将 victim 地址写入 fake->fd_nextsize 指向的目标。
- * 成功判据：target 等于新 victim 的 chunk 头；2.30 前后所需链字段不同，2.42 新增 nextsize 反向检查后经典写原语失效。
+ * 中文导读：本文件对应 large_bin_attack 手法，标注的版本范围是
+ * 2.23～2.29。模拟的漏洞是用 UAF 改写已经插入 largebin 的节点的
+ * bk_nextsize；核心流程是让一个更小的 victim 走最小节点分支插入，这样
+ * fake->fd_nextsize 指向的目标就会被写入 victim 地址。成功判据是目标
+ * 内存恰好等于新 victim 的 chunk 头；2.30 前后所需的链字段有区别，
+ * 2.42 新增了 nextsize 反向检查之后，这种经典写原语就失效了。
  *
  * 阅读约定：malloc 返回的是 user data；源码里 p[-1] 通常是 size，p[-2]
  * 是 prev_size。所有故意的 UAF、越界和 double free 都是漏洞模拟，不是正常 C 用法。
@@ -24,7 +24,7 @@
 
     [...]
 
-              以下是插入到排序链中的“否则”分支：else
+              下面是插入排序链时走到的“否则”分支：else
               {
                   victim->fd_nextsize = fwd;
                   victim->bk_nextsize = fwd->bk_nextsize;
@@ -41,8 +41,9 @@
     fwd->bk = victim;
     bck->fd = victim;
 
-    若要进一步理解 ptmalloc 如何组织和排序 largebin，请阅读上述文章的
-    背景章节，并同时对照目标版本 malloc.c 中的 _int_malloc 实现。
+    如果想进一步理解 ptmalloc 是怎样组织和排序 largebin 的，建议阅读
+    上述文章的背景章节，同时对照目标版本 malloc.c 里 _int_malloc 的
+    具体实现。
 
     [...]
 
@@ -58,8 +59,8 @@ int main()
     unsigned long stack_var1 = 0;
     unsigned long stack_var2 = 0;
 
-    /* p1、p2、p3 均超过 smallbin 范围；每个大块后放一个 0x20 guard，
-       防止释放时与相邻 chunk 或 top 合并。 */
+    /* p1、p2、p3 的大小都超过 smallbin 范围；每个大块后面放一个 0x20
+       的 guard 块，防止释放时和相邻 chunk 或 top 发生合并。 */
     unsigned long *p1 = malloc(0x420);
 
     malloc(0x20);
@@ -81,8 +82,9 @@ int main()
     // p3 暂留在 unsorted bin，下一次 malloc 时会把它插入现有 largebin。
     free(p3);
 
-    /* 漏洞模拟：伪造 p2 的 size、fd/bk 与 fd_nextsize/bk_nextsize。
-       旧版插入逻辑会分别执行两次反向指针写，从而改写 stack_var1/2。 */
+    /* 漏洞模拟：伪造 p2 的 size 字段，以及 fd/bk 与 fd_nextsize/
+       bk_nextsize 这四个指针。旧版插入逻辑会分别执行两次反向指针写，
+       由此改写 stack_var1 和 stack_var2。 */
     p2[-1] = 0x3f1;
     p2[0] = 0;
     p2[2] = 0;

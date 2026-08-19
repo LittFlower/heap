@@ -1,11 +1,13 @@
 /*
  * 中文导读（CTF 版）
  *
- * 手法：safe_linking
- * 文件标注范围：double ~ protect ~ 2.43
- * 模拟漏洞：泄露一个受保护单链指针，或能让同一指针经历两次 PROTECT_PTR。
- * 核心流程：解密 PoC 逐 12 位恢复地址；double-protect PoC 利用 xor 自反性把已知目标重新变成可用链指针。
- * 成功判据：恢复出的地址/最终分配地址与真实值相等。它是 2.32+ tcache/fastbin 攻击的配套原语。
+ * 手法：safe_linking（double-protect 分支）
+ * 文件标注范围：glibc 2.43
+ * 模拟漏洞：能让同一个指针经历两次 PROTECT_PTR 编码。
+ * 核心流程：利用 xor 的自反性，把一个已知的目标地址重新变成一个合法的
+ *   受保护链指针。
+ * 成功判据：最终分配到的地址与真实目标相等。这是 2.32 之后利用
+ *   tcache/fastbin 时常用的配套原语。
  *
  * 阅读约定：malloc 返回的是 user data；源码里 p[-1] 通常是 size，p[-2]
  * 是 prev_size。所有故意的 UAF、越界和 double free 都是漏洞模拟，不是正常 C 用法。
@@ -28,10 +30,11 @@
  *
  *     双重保护恒等式：(ptr ^ key) ^ key = ptr。
  *
- * PoC 先让一个 tcache bin 指向保存目标明文的堆块，使该值成为一次保护后的
- * next；再通过直接控制 tcache 元数据，让另一个 bin 把“存放密文的位置”
- * 当作链节点，分配器第二次异或后恢复目标地址。所需核心原语是能够修改
- * tcache_perthread_struct 的 entries；House of Water 正好可提供这种能力。
+ * 这份 PoC 先让一个 tcache bin 指向保存着目标明文的堆块，让这个值成为
+ * 第一次保护后的 next；再通过直接控制 tcache 元数据，让另一个 bin 把
+ * “存放密文的那个位置”当成链节点，这样分配器做第二次异或时就会把
+ * 目标地址还原出来。所需的核心原语是能够修改 tcache_perthread_struct
+ * 的 entries，House of Water 正好能提供这种能力。
  *
  * 若只有普通任意写，目标最低半字节受 0x10 对齐与 ASLR 影响，通常仍需爆破
  * 4 位；若漏洞能逐步递增整数，可枚举而不依赖崩溃重启。
@@ -85,7 +88,7 @@ int main(void) {
 	// 改写 0x30 tcache 的 entries，使链头落到保存 goal 明文的 value 块。
 	*(unsigned int*)(metadata+0xb0) = (((long)metadata >> 12) << 12)+((long)(value) & (0xfff));
 
-	void *_ = malloc(0x28);
+	malloc(0x28);
 
 	/* 漏洞模拟开始/结束 */	
 	*(unsigned int*)(metadata+0xa8) = (long)(metadata)+0xb0;
@@ -94,7 +97,7 @@ int main(void) {
 
 	// 第五步：从被重定向的 0x20 bin 申请两次，第二次应返回目标地址。
 	
-	_ = malloc(0x18);
+	malloc(0x18);
 
 	char *vuln = malloc(0x18);
 

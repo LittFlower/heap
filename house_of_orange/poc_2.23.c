@@ -43,7 +43,7 @@ int main()
      * 直接返回 mmap chunk。
      */
 
-    char *p1, *p2;
+    char *p1;
     size_t io_list_all, *top;
 
     // 第一次分配从 top 切出 0x400 物理尺寸，为越界覆盖 top header 创造相邻关系。
@@ -77,7 +77,7 @@ int main()
      * 这就是 House of Orange 的“无显式 free 也能得到 unsorted chunk”阶段。
      */
 
-    p2 = malloc(0x1000);
+    malloc(0x1000);
     /*
      * 此时旧 top 已作为 free chunk 进入 unsorted bin。第二阶段再次利用同一
      * 堆溢出，覆盖该 free chunk 的 size、fd 与 bk。理论上可以把双链指针

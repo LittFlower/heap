@@ -29,7 +29,7 @@ House of Lemon 是 **glibc 2.23 的标准流劫持链**：先把 `global_max_fas
 
 ## 从源码推导 0x17b0
 
-glibc 2.23 x86-64 的关键代码可以化成：
+glibc 2.23 x86-64 版本里相关的关键代码，简化之后大致是这样：
 
 ```c
 if (size <= get_max_fast()) {
@@ -52,13 +52,13 @@ size = (idx + 2) << 4                 = 0x17c0
 request                               = 0x17b0
 ```
 
-因此 `free(malloc(0x17b0))` 在 `global_max_fast >= 0x17c0` 时会把 chunk header 地址写入 stdout 的 vtable 槽。2.23 还没有 vtable 合法区检查，伪 vtable 放在该 chunk 即可取得控制流。
+因此，只要 `global_max_fast >= 0x17c0`，执行 `free(malloc(0x17b0))` 就会把 chunk header 的地址写进 stdout 的 vtable 槽位。2.23 还没有对 vtable 做合法区检查，把伪造的 vtable 放在这个 chunk 上就能直接拿到控制流。
 
 ## PoC
 
-- [`poc_2.23.c`](./poc_2.23.c)：在精确 `2.23-0ubuntu3_amd64` 上可执行。它把“已有一次 libc 任意写”作为前置条件，直接扩大 `global_max_fast`，随后执行超大尺寸 fastbin 越界写，并通过 `fflush(stdout)` 跳到 `win()`。
+- [`poc_2.23.c`](./poc_2.23.c)：只在版本精确匹配 `2.23-0ubuntu3_amd64` 时才能正确执行。它把“已经拿到一次 libc 任意写”当作前置条件直接给出，先扩大 `global_max_fast`，再执行超大尺寸的 fastbin 越界写，最后通过 `fflush(stdout)` 跳到 `win()`。
 
-PoC 刻意没有再拼接一遍 unsafe unlink：前者是通用任意写投递，已经由 [`unsafe_unlink`](../unsafe_unlink/README.md) 单独验证；本文件只保留 Lemon 独有、最值得在 GDB 中观察的部分。
+这份 PoC 故意没有再重复实现一遍 unsafe unlink：unsafe unlink 是通用的任意写投递手法，已经在 [`unsafe_unlink`](../unsafe_unlink/README.md) 里单独验证过；这里只保留 Lemon 这个手法本身、最值得在 GDB 里逐步观察的部分。
 
 ```bash
 cd heap_ultimate_cheatsheet
@@ -74,10 +74,10 @@ cd heap_ultimate_cheatsheet
 
 ## 迁移到题目
 
-1. 用 unsafe unlink、unsorted-bin write 或题目现成任意写扩大 `global_max_fast`；**必须先分配超大尺寸 chunk，再改大该值**，否则该尺寸的 `malloc` 路径会提前踩坏 arena。
-2. 从附件 ELF/调试符号重新求 `main_arena`、`global_max_fast` 和标准流目标槽，按上面的逆公式计算 chunk size。
-3. 伪 vtable 指向 chunk header；`free` 会把旧 fastbin 头写进 `p->fd`，所以不要把唯一关键函数指针放在 `user[0]`。
-4. 2.24+ 不要照搬 heap vtable 终点；应先确认新的消费路径，而不是只看到 OOB 写成功就宣称整条 House 仍可用。
+1. 用 unsafe unlink、unsorted-bin write，或者题目里现成的任意写去扩大 `global_max_fast`；**一定要先分配好这个超大尺寸的 chunk，再去改大该值**，否则这个尺寸对应的 `malloc` 路径会提前把 arena 弄坏。
+2. 从附件的 ELF 或调试符号重新求出 `main_arena`、`global_max_fast` 和标准流目标槽的地址，再按上面给出的逆推公式重新计算 chunk size,不能直接照搬本文的数值。
+3. 伪造的 vtable 要指向 chunk header；`free` 会把旧的 fastbin 头写进 `p->fd`,所以不要把唯一关键的函数指针放在 `user[0]` 这个位置。
+4. 2.24 及以后的版本不要照搬这份 heap vtable 的最终触发点；应该先确认新版本里可用的消费路径，而不是只看到 OOB 写成功了就断言整条 House of Lemon 仍然可用。
 
 ## 一手资料
 

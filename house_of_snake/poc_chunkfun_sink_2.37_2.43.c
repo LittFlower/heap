@@ -11,9 +11,10 @@
  *     -> 再进入扩容函数 _obstack_newchunk，
  *     -> 最终调用 obstack.chunkfun(obstack.extra_arg, new_size)。
  *
- * 这份程序用公开 API 建立真实 obstack，再耗尽当前 chunk，严格确认最终
- * callback 和两个参数。API 本身不是漏洞；House of Snake 的题目侧前置是
- * 能覆盖/伪造被 printf_buffer 持有的 obstack 对象。
+ * 这份程序用公开 API 建立一个真实的 obstack，再把当前 chunk 耗尽，严格
+ * 确认最终调用到的 callback 和它的两个参数。API 本身不是漏洞；House of
+ * Snake 真正的题目侧前置条件，是能覆盖或伪造被 printf_buffer 持有的那个
+ * obstack 对象。
  */
 
 #include <assert.h>
@@ -56,7 +57,7 @@ int main(void)
         &controlled_marker);
     assert(initialized != 0);
 
-    /* 不把初始化分配误算成 printf_buffer flush。 */
+    /* 把计数器清零，避免把 obstack 初始化时的那次分配误算成后面的 printf_buffer flush。 */
     callback_count = 0;
     last_extra_arg = NULL;
     last_requested_size = 0;
@@ -84,8 +85,8 @@ int main(void)
 /*
  * ======================== printf_buffer 布局伪代码 ========================
  *
- * 2.37～2.43 的题目若能覆盖 `struct __printf_buffer_obstack`，按附件源码或
- * 调试符号先取得其中 obstack 指针的真实偏移，再构造：
+ * 如果 2.37～2.43 的题目能覆盖 `struct __printf_buffer_obstack`，那就先按
+ * 附件源码或调试符号，确认其中 obstack 指针的真实偏移，再据此构造：
  *
  *     fake_printf_buffer.obstack = &fake_obstack；
  *     fake_obstack.next_free = 可控缓冲区末尾；
@@ -98,6 +99,7 @@ int main(void)
  *     因当前 chunk 没有空间，进入 `_obstack_newchunk`；
  *     验证调用形态是 chunkfun(extra_arg, new_size)；
  *
- * `__printf_buffer_obstack` 是内部结构，指针偏移必须按目标 Build ID 复核。
- * 存在合法设置回调的 API 只证明消费路径，不代表题目自动拥有覆盖原语。
+ * `__printf_buffer_obstack` 属于内部结构，其中的指针偏移必须按目标的
+ * Build ID 重新核实。存在合法的回调设置 API，只能说明这条调用链确实能被
+ * 触发，并不代表题目自动就拥有覆盖它所需的写入原语。
  */

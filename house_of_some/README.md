@@ -2,10 +2,10 @@
 
 ## 结论
 
-- 适用范围：**x86-64 glibc 2.23～2.43**；2.23、2.24、2.29、2.30、2.31、2.39、2.40、2.43 已按对应运行时实跑消费端。
+- 适用范围：**x86-64 glibc 2.23～2.43**；其中 2.23、2.24、2.29、2.30、2.31、2.39、2.40、2.43 这几个版本已经在对应的 glibc 运行时上把消费链实际跑通验证过。
 - 核心效果：使用合法 `_IO_wfile_jumps` 和合法 section 内的 shifted wide vtable，把 `_IO_flush_all` 的一次 overflow 变成 `read(fd, target, length)`；再用 `_chain` 串联多个读写 FILE，形成 RWRWR，最终把 ROP 直接写到栈上返回地址之后。
 - 前置能力：已知 libc 基址；有已知可写区放 fake FILE/wide data；能进行一次 libc 内指针写（典型目标是 `_IO_list_all` 或现有标准流的 `_chain`）；程序能走 `exit`/正常退出。
-- 它是 FILE/FSOP 消费链，不是堆管理器原语。fastbin/tcache/largebin 等只负责写 `_IO_list_all` 和布置堆上数据。
+- 它属于 FILE/FSOP 消费链——也就是伪造字段写好之后，glibc 真正读取并触发控制转移的那条源码路径——而不是堆管理器本身提供的原语；fastbin/tcache/largebin 等操作在这里只负责把地址写进 `_IO_list_all`，并在堆上摆好这些伪造数据。
 
 House of Some 与 House of Illusion 不是同一条底层链：
 
@@ -65,10 +65,10 @@ glibc 2.24 起对 primary vtable 做 `IO_validate_vtable`；这里 primary 指�
 
 原文所谓 RWRWR 不是“一份固定 FILE 自动打所有题”，而是利用 `_IO_flush_all` 按 `_chain` 继续遍历的特性，分阶段把新 fake FILE 写进受控区：
 
-1. **W**：最初的 Some FILE 从输入读取更长的 fake FILE 链；第一次 libc 指针写只需把它挂入 `_IO_list_all`。
-2. **R + W**：普通 `_IO_file_jumps` FILE 泄露 `environ` 中的栈地址；下一份 Some FILE 同时读入下一阶段链。
-3. **R + W**：泄露栈窗口，定位当前 `_IO_flush_all`/调用者返回地址；下一份 Some FILE 把最终 ROP 数据写到返回地址之后。
-4. **R/W 最终写**：把 ROP 直接写上栈。目标起点可选在 canary 之后，因此先前的栈泄露同时解决 canary/返回位置问题。
+1. **W**：先构造第一个 Some FILE，让它的读入端从输入里读到一条更长的 fake FILE 链；这一步只需要一次 libc 指针写，把它挂到 `_IO_list_all` 上即可，后续所有阶段都会顺着这条链继续跑下去。
+2. **R + W**：用一个普通的 `_IO_file_jumps` FILE 去读 `environ`，从中泄露出栈地址；与此同时链上的下一个 Some FILE 会把下一阶段要用的数据读进来，这样一次 flush 就同时完成了泄露和为下一步做准备。
+3. **R + W**：拿到栈地址后就能算出具体的栈窗口，定位到当前 `_IO_flush_all` 或其调用者的返回地址；链上再下一个 Some FILE 借这次机会把最终要用的 ROP 数据写到这个返回地址之后，等着最后一步落地。
+4. **R/W 最终写**：最后一步把 ROP 直接写到栈上。写入起点可以选在 canary 之后，这样前面泄露到的栈窗口就同时解决了绕开 canary 和对齐到正确返回位置这两个问题。
 
 每次读入都会阻塞，等待下一阶段数据；远程脚本必须匹配 `_IO_flush_all` 的遍历顺序。`_chain`、fd、栈偏移、ROP gadget 和沙箱策略都要按题目确定。
 
@@ -84,7 +84,7 @@ glibc 2.24 起对 primary vtable 做 `IO_validate_vtable`；这里 primary 指�
 
 ## PoC 与运行
 
-三份 C PoC 都真实覆盖 `_IO_list_all`，从 `fflush(NULL)` 进入上面的完整消费链，并用 pipe+`memcmp` 断言 fd 数据确实落进目标数组。它们验证的是 RWRWR 的关键 W 原语与版本布局；完整栈 ROP 仍需按题目生成交互阶段。
+三份 C PoC 都会真实覆写 `_IO_list_all`，从 `fflush(NULL)` 触发进入上面描述的完整消费链，并用 pipe 配合 `memcmp` 断言 fd 数据确实写进了目标数组。它们验证的是 RWRWR 链条中关键的 W 原语与对应版本的字段布局；完整的栈上 ROP 编排仍然要按题目具体情况生成交互阶段。
 
 ```bash
 ./tools/run_in_docker.sh 2.23 house_of_some/poc_2.23_2.29.c
@@ -92,7 +92,7 @@ glibc 2.24 起对 primary vtable 做 `IO_validate_vtable`；这里 primary 指�
 ./tools/run_in_docker.sh 2.43 house_of_some/poc_2.31_2.43.c
 ```
 
-PoC 的 `dlsym` 只代替 libc 泄露/符号偏移，直接写 `_IO_list_all` 只代替 heap 投递原语；二者都不是 technique 自带的攻击能力。
+PoC 里的 `dlsym` 只是用来代替真实题目中的 libc 泄露和符号偏移计算；直接覆写 `_IO_list_all` 也只是代替把伪造 FILE“投递”（也就是写进堆或其他可控内存）到目标地址这一步。这两步都不是 House of Some 这个手法本身自带的攻击能力，实战中都要换成题目提供的漏洞原语去完成。
 
 ## 源码与原始资料
 

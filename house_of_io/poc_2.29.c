@@ -1,12 +1,14 @@
 /*
- * House of IO：glibc 2.29 的 char-counts 布局。
+ * House of IO：对应 glibc 2.29 的 char-counts 布局。
  *
- * 漏洞模型：free 后仍能读写用户对象的 +8 字段（UAF）。2.29 在 free 到
- * tcache 时把 e->key 写成 tcache_perthread_struct 自身地址，这等于无偿
- * 泄露管理结构；随后直接改 counts/entries，让 malloc 返回任意地址。
+ * 漏洞模型：free 之后仍能读写用户对象 +8 处的字段（也就是一次 UAF）。
+ * 2.29 在把 chunk 释放进 tcache 时，会把 e->key 写成 tcache_perthread_struct
+ * 自身的地址，这等于白白泄露了管理结构的地址；拿到这个地址之后，直接
+ * 改写 counts/entries，就能让 malloc 返回任意指定的地址。
  *
- * 2.30 起 counts 由 char[64] 改为 uint16_t[64]，请用另一份 PoC；
- * 2.34 起 key 是随机进程值，不再泄露 tcache 指针，原始 House of IO 结束。
+ * 2.30 起 counts 从 char[64] 改成了 uint16_t[64]，需要用另一份 PoC 来
+ * 验证；2.34 起 key 变成随机的进程相关值，不再泄露 tcache 指针，原始
+ * House of IO 到这里就结束了。
  */
 
 #include <assert.h>
@@ -40,12 +42,12 @@ int main(void)
 
     free(victim);
 
-    /* UAF 读取：2.29 的 tcache_put 执行 e->key = tcache。 */
+    /* UAF 读取：2.29 的 tcache_put 会执行 e->key = tcache。 */
     tcache = victim->key;
     assert(tcache != NULL);
 
-    /* 漏洞模拟：控制 tcache metadata。target 是 0x10 对齐的 BSS 数组，
-     * target[0]=0 也能让 tcache_get 读取一个干净的 next。
+    /* 漏洞模拟：直接控制 tcache 的元数据。target 是一个 0x10 对齐的
+     * BSS 数组，target[0]=0 正好也能让 tcache_get 读到一个干净的 next。
      */
     tcache->counts[0] = 1;
     tcache->entries[0] = target;

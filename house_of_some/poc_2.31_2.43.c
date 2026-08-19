@@ -9,15 +9,16 @@
 #include <unistd.h>
 
 /*
- * House of Some 消费端：glibc 2.31～2.43 / x86-64。
+ * House of Some 消费链验证：glibc 2.31～2.43 / x86-64。
  *
- * 真实调用链：
+ * 真实的调用链是这样走的：
  *   fflush(NULL) -> _IO_flush_all -> _IO_wfile_overflow
- *   -> 进入 _IO_wdoallocbuf，再通过错位宽字符虚表调用 doallocate，
+ *   -> 进入 _IO_wdoallocbuf，再通过错位的宽字符虚表调用 doallocate，
  *   -> 最终经 _IO_new_file_underflow 与 _IO_file_read 执行 read(fd, target, len)。
  *
- * PoC 用 dlsym 代替题目中的 libc 泄露，用直接改 _IO_list_all 代替 heap
- * 投递原语。最终必须由 memcmp 证明 fd 数据确实写进 target。
+ * 这份 PoC 用 dlsym 代替真实题目里的 libc 泄露，用直接改写 _IO_list_all
+ * 代替把伪造数据投递到堆上的原语。最后一定要用 memcmp 证明 fd 里的数据
+ * 确实写进了 target，才算这条链真正跑通。
  */
 
 #define IO_LINKED 0x0080

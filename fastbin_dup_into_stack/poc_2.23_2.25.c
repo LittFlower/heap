@@ -23,7 +23,7 @@ int main()
 
 	int *a = malloc(8);
 	int *b = malloc(8);
-	int *c = malloc(8);
+	malloc(8); // 保护块防止 b 与 top 合并。
 
 	free(a);
 

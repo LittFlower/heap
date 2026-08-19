@@ -2,14 +2,14 @@
 
 ## 先说结论
 
-目录只保留可执行 C 文件。地址公式、六阶段链和构建检查表都放在 C 文件末尾的中文注释中：
+这个目录只保留可以直接运行的 C 文件。地址公式、六阶段链的说明，以及构建检查表，都放在 C 文件末尾的中文注释里：
 
 | 文件 | 类型 | 用途 |
 |---|---|---|
-| [`poc_fastbin_pointer_move_2.32_2.36.c`](./poc_fastbin_pointer_move_2.32_2.36.c) | 可执行 C 源码模型 | 逐句验证 fastbin size 反算、safe-linking 和两段指针搬运 |
-| [`check_build_mapping_2.32.c`](./check_build_mapping_2.32.c) | C 运行时检查器，不是 PoC | 查 `_IO_file_jumps` 的实际地址和映射权限 |
+| [`poc_fastbin_pointer_move_2.32_2.36.c`](./poc_fastbin_pointer_move_2.32_2.36.c) | 可执行的 C 源码模型 | 逐句验证 fastbin size 的反算方式、safe-linking 编码，以及两段式的指针搬运 |
+| [`check_build_mapping_2.32.c`](./check_build_mapping_2.32.c) | C 语言运行时检查器，不是 PoC | 查询 `_IO_file_jumps` 的实际地址和对应映射的权限 |
 
-这里没有声称存在“跨所有 glibc 2.32 的完整 Crust C exploit”。原版最终 FSOP 明确依赖自编译构建的链接布局、可写映射、精确 gadget 和寄存器约束；原作者测试六个自编译 2.32 构建，最终链只有一个成立。没有给定那份 libc/ld Build ID 时，写一个固定偏移版本反而会误导。
+这里并不是要声称存在一个“适用于所有 glibc 2.32 构建的完整 Crust C exploit”。原版手法最终的 FSOP 明确依赖自编译构建的链接布局、可写映射、精确的 gadget 以及寄存器状态约束；原作者在六个自编译的 2.32 构建上做过测试，其中最终能跑通的链只有一个。既然没有给定那份具体的 libc/ld Build ID，硬写一个固定偏移的版本反而会误导读者。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -39,7 +39,7 @@
 
 ## C 指针搬运模型验证了什么
 
-glibc 2.32 起 fastbin `fd` 使用 safe-linking。模型只有一个 `main`，用真实 `malloc` 地址作为 victim，然后按源码顺序直接写出核心赋值：
+glibc 2.32 起 fastbin 的 `fd` 字段开始使用 safe-linking 编码。这个模型只有一个 `main` 函数，用真实的 `malloc` 地址来充当 victim，然后按源码里的实际顺序直接写出核心赋值：
 
 ```text
 free:   victim->fd = PROTECT_PTR(&victim->fd, *fastbin_head)
@@ -54,9 +54,9 @@ malloc: *fastbin_head = REVEAL_PTR(victim->fd)
 源槽 -> libc 可编辑中转区 -> 修改指针值 -> 目标槽
 ```
 
-它验证的是 fastbin 指针搬运算法，不是真实 `_int_free` 完整利用。模型把“victim 已经重复挂入另一个远端 fastbin 头槽”当作输入；真实 Crust 还要靠 WAF、重叠 chunk、用于通过检查的安全值区域，以及已经被放大的 `global_max_fast` 建立这个状态。
+它验证的是 fastbin 指针搬运这个算法本身，不是真实场景下 `_int_free` 的完整利用过程。模型把“victim 已经被重复挂入另一个远端 fastbin 头槽”当作既定输入；而在真实的 Crust 利用中，还需要靠 WAF、重叠 chunk、用来通过检查的安全值区域，以及已经被放大的 `global_max_fast` 才能建立起这个状态。
 
-这种区分很重要：模型成功只说明公式和搬运顺序正确；只有在目标 libc 中真实命中 `main_arena.fastbinsY[index]`，才说明堆管理器投递成功。前置 TSU+/TSU/largebin 请分别运行 [House of Rust 的线性 C PoC](../house_of_rust/README.md)。
+这个区分很重要：模型跑成功只说明公式和搬运顺序是对的；只有在目标 libc 中真的命中了 `main_arena.fastbinsY[index]`，才能说明堆管理器这一步投递成功了。前置的 TSU+/TSU/largebin 步骤，请分别去运行 [House of Rust 的线性 C PoC](../house_of_rust/README.md)。
 
 ## 地址怎么计算
 
@@ -83,9 +83,9 @@ request    = (chunk size & ~7) - 0x10
 ./tools/run_in_docker.sh 2.32 house_of_crust/check_build_mapping_2.32.c
 ```
 
-程序用 `dlsym/dlvsym` 找到真实 `_IO_file_jumps`，再查询 `/proc/self/maps`。当前验证所用 Ubuntu glibc 2.32 显示 `rw-p`，说明“可写 jump table”这一项成立；这仍不代表原作者最终链可用，因为 gadget、相对跳转、寄存器状态和 one_gadget 约束尚未审计。
+程序用 `dlsym/dlvsym` 找到真实的 `_IO_file_jumps`，再去查询 `/proc/self/maps`。当前验证用的 Ubuntu glibc 2.32 显示的权限是 `rw-p`，说明“jump table 可写”这一项条件成立；但这仍然不代表原作者的最终链就能跑通，因为 gadget、相对跳转、寄存器状态和 one_gadget 约束这几项都还没有审计过。
 
-随后按 C 文件末尾的检查表人工确认：映射确实可写、低四位猜测命中、gadget 已按附件反汇编、寄存器状态和最终调用约束全部匹配。记录一个布尔值不能替代这些审计。
+接下来还要按 C 文件末尾的检查表逐项人工确认：映射确实可写、libc 地址低四位猜测命中、gadget 已经按附件反汇编重新核对、寄存器状态和最终调用约束全部匹配。光记录一个布尔值,是没办法代替这些审计工作的。
 
 ## 从源码看 2.37 为什么是硬边界
 

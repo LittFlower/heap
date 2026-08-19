@@ -2,11 +2,11 @@
 
 ## 结论
 
-- 适用范围：**glibc 2.26～2.40**；2.41 删除所依赖的 stashing loop，TSU++ 的“一次循环双输出”消费路径硬失效。用两条其他原语分别取得相同输出不算 TSU++ 仍可用。
-- 原语效果：一次 smallbin stashing 同时完成“任意地址 chunk 进入 tcache”和“向另一任意地址写一个 main_arena/smallbin 指针”。
-- 漏洞前置：能修改 smallbin victim 的 `bk`；目标区对齐并能布置一个伪 `bk`。
+- 适用范围：**glibc 2.26～2.40**；2.41 删除了它所依赖的 stashing 循环，TSU++ 那种“一次循环拿到两个输出”的路径就此彻底失效。用两条其他原语分别拿到相同输出并不算 TSU++ 仍然可用。
+- 原语效果：一次 smallbin stashing 同时做到两件事——把任意地址的 chunk 塞进 tcache，同时向另一个任意地址写入一个 main_arena/smallbin 指针。
+- 漏洞前置：能修改 smallbin victim 的 `bk`；目标区域对齐，并且能布置一个伪造的 `bk`。
 
-TSU++ 可以看作把 TSU+ 的“目标附近必须有可写指针”变成第二个利用目标：
+TSU++ 可以看作是把 TSU+ 里“目标附近必须有可写指针”这个约束，反过来变成了第二个可以利用的目标：
 
 ```text
 victim->bk      = fake_chunk - 0x10
@@ -29,7 +29,7 @@ bck->fd = bin      => *(secret) = smallbin/main_arena 地址
 
 ## PoC
 
-- [`poc_2.26_2.40.c`](./poc_2.26_2.40.c)：布置 7 个 tcache chunk 与 5 个 smallbin chunk；触发后同时断言 `malloc` 返回栈上伪 chunk、`secret` 被写为非零 libc 地址。
+- [`poc_2.26_2.40.c`](./poc_2.26_2.40.c)：布置 7 个 tcache chunk 和 5 个 smallbin chunk，触发后同时断言 `malloc` 返回了栈上的伪 chunk，并且 `secret` 被写成了一个非零的 libc 地址。
 
 ```bash
 ./tools/run_in_docker.sh 2.27 tcache_stashing_unlink_attack_plus_plus/poc_2.26_2.40.c
@@ -38,9 +38,9 @@ bck->fd = bin      => *(secret) = smallbin/main_arena 地址
 
 ## 版本变化与源码
 
-- 2.26 引入 tcache，才有“smallbin 取一个、剩余节点预填充 tcache”的组合；所以不存在 2.23 版 TSU++。
-- 2.32 safe-linking 只编码 tcache/fastbin 单链 `next`；smallbin 的 `fd/bk` 仍为明文。目标需要 0x10 对齐，但经典攻击结构仍成立。
-- 2.41 提交 `e2436d6` 重构小块投递，旧 stashing 循环消失，TSU、TSU+、TSU++ 以及由它们拼成的 Rust/Crust 都不能照搬。
+- 2.26：引入 tcache 之后才有了“smallbin 取一个、剩余节点预填充进 tcache”这个组合，所以不存在 2.23 版本的 TSU++。
+- 2.32：safe-linking 只编码 tcache/fastbin 那条单向链表的 `next`；smallbin 的 `fd/bk` 仍然是明文。目标需要 0x10 对齐，但经典的攻击结构依然成立。
+- 2.41：提交 `e2436d6` 重构了小块的投递方式，旧的 stashing 循环消失了，TSU、TSU+、TSU++ 以及由它们拼出来的 Rust/Crust 都没法照搬了。
 
 源码阅读入口：
 
@@ -50,7 +50,7 @@ bck->fd = bin      => *(secret) = smallbin/main_arena 地址
 
 ## 调试重点
 
-1. `calloc` 前确认 tcache 中恰好剩两个节点、smallbin 有五个真实节点；这是本 PoC 能遍历到 `chunks[11]` 的原因。
-2. `fake_chunk` 是期望返回的用户地址，写入 victim 的是 `fake_chunk-0x10`。
-3. 第二个目标按 `bck->fd` 的字段偏移逆推，因此写 `secret-0x10`；如果误写 `secret`，实际落点会偏 0x10。
-4. 2.32+ 若最终链损坏，分别检查 smallbin 明文双链与 tcache safe-linked 单链，不要混为一个编码规则。
+1. 调用 `calloc` 之前先确认 tcache 里恰好还剩两个节点，smallbin 里有五个真实节点；这就是本 PoC 能一路遍历到 `chunks[11]` 的原因。
+2. `fake_chunk` 是我们期望 malloc 最终返回的用户地址，写入 victim 的其实是 `fake_chunk-0x10`。
+3. 第二个目标要按 `bck->fd` 的字段偏移往回推，所以写的是 `secret-0x10`；如果不小心直接写 `secret`，实际落点就会偏出去 0x10。
+4. 如果 2.32 之后链表损坏了，要分别检查 smallbin 的明文双向链表和 tcache 的 safe-linked 单向链表，别把这两套编码规则混在一起改。
