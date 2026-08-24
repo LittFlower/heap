@@ -41,27 +41,75 @@ C 语言 PoC 用的是官方合法 API 来设置回调，所以 API 本身不是
 
 ## Python 离线板子
 
+[`snake.py`](./snake.py) 提供 `build_house_of_snake`，生成 2.37+ printf_buffer obstack 消费路径的字段计划。
+
+### 函数用途
+
+描述 `__printf_buffer_flush_obstack -> _obstack_newchunk -> chunkfun(extra_arg, new_size)` 最终触发点所需的字段来源。
+
+### 最小使用示例
+
 ```python
 from snake import build_house_of_snake
+
 plan = build_house_of_snake(
-    printf_buffer_addr=printf_buffer,
-    obstack_addr=fake_obstack,
-    object_base=chunk_base,
-    next_free=chunk_end,
-    chunkfun_addr=callback,
-    extra_arg=callback_arg,
+    printf_buffer_addr=0x100000,  # printf buffer 对象
+    obstack_addr=0x200000,        # fake obstack
+    object_base=0x300000,         # 当前 chunk 起点
+    next_free=0x301000,           # 写指针（= chunk_limit 触发扩容）
+    chunkfun_addr=0x401234,       # 分配回调
+    extra_arg=0x500000,           # callback 第一个参数
 )
+
+# 返回 SnakePlan 数据类
+print(plan.printf_buffer_addr, plan.obstack_addr,
+      hex(plan.chunkfun), hex(plan.extra_arg))
 ```
+
+### 对应 PoC
+
+- [`poc_chunkfun_sink_2.37_2.43.c`](./poc_chunkfun_sink_2.37_2.43.c)。
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
 | `printf_buffer_addr` | 题目可控的 `__printf_buffer_obstack` 对象地址。 |
 | `obstack_addr` | 该对象持有的 fake obstack 地址。 |
-| `object_base` / `next_free` / `chunk_limit` | obstack 当前 chunk 的边界；默认让 `next_free == chunk_limit`。 |
+| `object_base` | 当前 obstack chunk 起点。 |
+| `next_free` | 当前写指针；与 `chunk_limit` 相等时扩容立即发生。 |
 | `chunkfun_addr` | `_obstack_newchunk` 的分配回调。 |
 | `extra_arg` | callback 第一个参数。 |
+| `chunk_limit` | 当前 chunk 上限；省略时取 `next_free`。 |
 
-返回 `SnakePlan`。由于 `__printf_buffer_obstack` 是内部结构，函数不猜其 obstack 指针偏移；需先从目标 Build ID/调试信息确认再写入。
+### 返回对象 `SnakePlan`
+
+| 字段 | 含义 |
+|---|---|
+| `printf_buffer_addr` | printf buffer 对象地址。 |
+| `obstack_addr` | fake obstack 地址。 |
+| `object_base` | 当前 chunk 起点。 |
+| `next_free` | 当前写指针。 |
+| `chunk_limit` | 当前 chunk 上限。 |
+| `chunkfun` | 分配回调地址。 |
+| `extra_arg` | callback 第一个参数。 |
+
+### 调用者必须提供
+
+```text
+2.37+ 的 __printf_buffer_obstack 内部指针偏移（Build ID / 调试信息）
+能覆盖该对象或其所持 obstack 指针的原语
+能触发 printf obstack flush 的入口
+```
+
+### 函数不负责
+
+```text
+不猜 __printf_buffer_obstack 内部 obstack 指针偏移
+不投递 printf buffer / fake obstack
+不触发 flush
+2.36 及更早应使用 house_of_obstack
+```
 
 ## 迁移与调试
 

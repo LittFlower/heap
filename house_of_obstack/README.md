@@ -41,25 +41,70 @@ C PoC 使用合法 API 设置回调，所以 API 本身不是漏洞；文件末�
 
 ## Python 离线板子
 
+[`obstack.py`](./obstack.py) 提供 `build_obstack_plan`，生成旧 Obstack 消费路径的 obstack 字段计划。
+
+### 函数用途
+
+描述 `_obstack_newchunk -> chunkfun(extra_arg, new_size)` 最终触发点所需的字段来源。
+
+### 最小使用示例
+
 ```python
 from obstack import build_obstack_plan
+
 plan = build_obstack_plan(
-    object_base=chunk_base,
-    next_free=chunk_end,
-    chunkfun_addr=callback,
-    extra_arg=callback_arg,
+    object_base=0x100000,     # 当前 chunk 起点
+    next_free=0x101000,       # 写指针（= chunk_limit 触发扩容）
+    chunkfun_addr=0x401234,   # 分配回调
+    extra_arg=0x500000,       # callback 第一个参数
 )
+
+# 返回 ObstackPlan 数据类
+print(plan.object_base, plan.next_free, plan.chunk_limit,
+      hex(plan.chunkfun), hex(plan.extra_arg), plan.use_extra_arg)
 ```
+
+### 对应 PoC
+
+- [`poc_chunkfun_sink_2.23_2.36.c`](./poc_chunkfun_sink_2.23_2.36.c)。
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
 | `object_base` | 当前 obstack chunk 起点。 |
 | `next_free` | 当前写指针；与 `chunk_limit` 相等时扩容立即发生。 |
-| `chunk_limit` | 当前 chunk 上限，省略时取 `next_free`。 |
-| `chunkfun_addr` | `_obstack_newchunk` 调用的分配回调。 |
+| `chunkfun_addr` | `_obstack_newchunk` 间接调用的分配回调。 |
 | `extra_arg` | callback 第一个参数。 |
+| `chunk_limit` | 当前 chunk 上限；省略时取 `next_free`，让扩容立即发生。 |
 
-返回 `ObstackPlan`，只描述 `chunkfun(extra_arg, new_size)` 的参数来源，不生成旧 FILE vtable 或题目投递数据。
+### 返回对象 `ObstackPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `object_base` | 当前 chunk 起点。 |
+| `next_free` | 当前写指针。 |
+| `chunk_limit` | 当前 chunk 上限。 |
+| `chunkfun` | 分配回调地址。 |
+| `extra_arg` | callback 第一个参数。 |
+| `use_extra_arg` | 固定为 1，表示 chunkfun 带 extra_arg 调用。 |
+
+### 调用者必须提供
+
+```text
+2.23～2.36 的合法 _IO_obstack_jumps
+能投递 fake _IO_obstack_file 或覆盖 FILE 的原语
+能触发 obstack_printf / flush 的入口
+```
+
+### 函数不负责
+
+```text
+不生成旧 FILE vtable
+不投递 fake _IO_obstack_file
+不触发 printf/flush
+2.37+ 应改用 house_of_snake
+```
 
 ## 迁移与调试
 

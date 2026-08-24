@@ -90,7 +90,81 @@ memset(new_buf + old_blen, 0, new_size - old_blen);
 
 ## Python 离线板子
 
-`pig.py` 的 `build_house_of_pig(version, old_buffer_addr, old_length, stream_addr=None)` 计算扩容结果 `new_size = 2 * old_length + 100`。2.23～2.27 必须传 `stream_addr`，返回旧式 `allocate/free` 槽地址；2.28～2.43 只返回直接 malloc/memcpy/free 数据流，旧回调不再消费。
+[`pig.py`](./pig.py) 提供 `build_house_of_pig`，把 `_IO_str_overflow` 的扩容数据流算成可直接用的计划对象。
+
+### 函数用途
+
+```text
+计算扩容时的 new_size = 2 * old_blen + 100
+按版本区分旧式回调槽和现代直接 malloc/memcpy/free 数据流
+```
+
+### 对应 PoC
+
+- [`poc_legacy_callbacks_2.23_2.27.c`](./poc_legacy_callbacks_2.23_2.27.c)：2.23～2.27 消费 `FILE+0xe0` 的 `_allocate_buffer` 与 `FILE+0xe8` 的 `_free_buffer`；
+- [`poc_str_overflow_sink_2.28_2.43.c`](./poc_str_overflow_sink_2.28_2.43.c)：2.28+ 直接执行 `malloc(new_size)`、`memcpy`、`free(old)`、`memset`。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.43`。 |
+| `old_buffer_addr` | 扩容前 `_IO_buf_base`，即旧缓冲区地址。 |
+| `old_length` | 旧缓冲区长度 `_IO_buf_end - _IO_buf_base`，必须大于 0。 |
+| `stream_addr` | `_IO_strfile` 对象地址。仅 2.23～2.27 必须提供，用于计算旧式回调槽；2.28+ 可省略。 |
+
+### 返回对象 `PigPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `old_buffer_addr` | 传入的旧缓冲区地址。 |
+| `old_length` | 传入的旧长度。 |
+| `new_size` | `2 * old_length + 100`，即扩容后申请的大小。 |
+| `allocate_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe0`；2.28+ 为 `None`。 |
+| `free_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe8`；2.28+ 为 `None`。 |
+
+### 最小使用示例
+
+```python
+from pig import build_house_of_pig
+
+# 2.28+：直接 malloc/memcpy/free 数据流
+plan = build_house_of_pig(
+    version="2.35",
+    old_buffer_addr=0x300000,   # 旧 _IO_buf_base
+    old_length=0x40,            # old_blen
+)
+print(plan.new_size)            # 2 * 0x40 + 100 = 0xc4
+print(plan.allocate_slot_addr, plan.free_slot_addr)  # None, None
+
+# 2.23～2.27：需要 stream_addr，返回旧回调槽
+plan = build_house_of_pig(
+    version="2.27",
+    old_buffer_addr=0x300000,
+    old_length=0x40,
+    stream_addr=0x200000,       # _IO_strfile 对象
+)
+print(hex(plan.allocate_slot_addr), hex(plan.free_slot_addr))
+# 0x2000e0, 0x2000e8
+```
+
+### 调用者必须提供
+
+```text
+可被 _IO_str_overflow 消费的 memstream/_IO_strfile 对象
+能触发 overflow 的 write_ptr == write_end 条件
+2.28+ 控制内部 malloc 返回位置所需的堆原语
+2.23～2.27 覆盖 FILE+0xe0/0xe8 回调槽的能力
+```
+
+### 函数不负责
+
+```text
+不生成完整 payload
+不负责 malloc 投递到 __free_hook / GOT / setcontext
+不处理 PLUS 分支的 IFUNC/GOT、RELRO 和 gadget 约束
+```
+
 
 ## 迁移与调试
 

