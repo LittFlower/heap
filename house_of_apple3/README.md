@@ -75,6 +75,40 @@ struct {
 
 三份 C PoC 自身就是三段 fake codecvt/step 布局，并以 `fgetwc == L'3'` 和回调次数作为严格成功判据；无需再生成脱离消费路径的静态字节串。
 
+## Python 离线板子
+
+[`apple3.py`](./apple3.py) 按三份 PoC 生成 `_codecvt`、fake step、wide buffer 和 FILE 入口字段。
+
+```python
+from apple3 import build_house_of_apple3
+
+writes = build_house_of_apple3(
+    "2.35",
+    file_addr=fake_file,
+    fake_codecvt_addr=fake_codecvt,
+    fake_step_addr=fake_step,
+    callback_addr=callback,
+    wide_data_addr=wide_data,
+    wide_output_addr=wide_output,
+    external_input_addr=input_buffer,
+    current_flags=known_flags,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本；2.23～2.29 使用 codecvt `+0x18`，2.30 使用 `+0x08 -> step`，2.31～2.43 使用 `+0x00 -> step`。 |
+| `file_addr` | 被覆盖的 FILE 地址。 |
+| `fake_codecvt_addr` | fake `_IO_codecvt`/`_IO_iconv_t` 地址，写入 `FILE + 0x98`。 |
+| `fake_step_addr` | 2.30 及以上 fake `__gconv_step` 地址；旧 ABI 不消费该对象，但仍要求显式传入以避免隐式地址推导。 |
+| `callback_addr` | codecvt `do_in` 或 `__gconv_step.__fct` 回调地址。 |
+| `wide_data_addr` | 真实或 fake `_IO_wide_data` 地址，写入 `FILE + 0xa0`。 |
+| `wide_output_addr` | wide buffer 起点；PoC 按 `+0x20` 生成结束地址。 |
+| `external_input_addr` | 窄字符输入区起点；PoC 用一字节输入让 `fgetwc` 进入转换路径。 |
+| `current_flags` | 已知 `_flags` 时传入；函数清除 `EOF_SEEN` 和 `NO_READS`，未知时省略。 |
+
+返回 `MemoryWrite` 元组。函数只生成消费点布局，不负责 libc 投递、primary vtable、`fgetwc` 触发或 callback 后续逻辑。
+
 ## 迁移与调试
 
 1. 先按版本选择三段 ABI，尤其不要把 2.30 的 `step@+0x8` 误套成 2.31 的 `+0x0`。

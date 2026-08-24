@@ -39,6 +39,28 @@ libio/obprintf.c、libio/vtables.c 与 2.37 stdio-common/printf_buffer_flush.c�
 
 C PoC 使用合法 API 设置回调，所以 API 本身不是漏洞；文件末尾的中文伪代码说明题目侧 fake FILE/obstack 布局。
 
+## Python 离线板子
+
+```python
+from obstack import build_obstack_plan
+plan = build_obstack_plan(
+    object_base=chunk_base,
+    next_free=chunk_end,
+    chunkfun_addr=callback,
+    extra_arg=callback_arg,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `object_base` | 当前 obstack chunk 起点。 |
+| `next_free` | 当前写指针；与 `chunk_limit` 相等时扩容立即发生。 |
+| `chunk_limit` | 当前 chunk 上限，省略时取 `next_free`。 |
+| `chunkfun_addr` | `_obstack_newchunk` 调用的分配回调。 |
+| `extra_arg` | callback 第一个参数。 |
+
+返回 `ObstackPlan`，只描述 `chunkfun(extra_arg, new_size)` 的参数来源，不生成旧 FILE vtable 或题目投递数据。
+
 ## 迁移与调试
 
 1. 2.24～2.36 让 FILE vtable 指向合法 `_IO_obstack_jumps`；2.23 没有 vtable 白名单，但仍可使用同一表。

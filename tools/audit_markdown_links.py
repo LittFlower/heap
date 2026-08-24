@@ -82,6 +82,10 @@ def main() -> int:
             target = destination_path(markdown, match.group(1))
             if target is None:
                 continue
+            # 绝对路径指向作者本机的离线资料时，不属于交付目录的本地链接。
+            # 这类引用保留为 provenance，但不能要求接收者拥有作者的本地路径。
+            if target.is_absolute() and not target.is_relative_to(root):
+                continue
             local_links += 1
             relative_source = markdown.relative_to(root)
             line = line_number(text, match.start())

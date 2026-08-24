@@ -88,6 +88,10 @@ memset(new_buf + old_blen, 0, new_size - old_blen);
 
 现代 C 文件末尾分别整理经典 hook 窗口、PLUS 构建检查和 2.42～2.43 替代投递伪代码；可执行主体只承诺真实扩容数据流。
 
+## Python 离线板子
+
+`pig.py` 的 `build_house_of_pig(version, old_buffer_addr, old_length, stream_addr=None)` 计算扩容结果 `new_size = 2 * old_length + 100`。2.23～2.27 必须传 `stream_addr`，返回旧式 `allocate/free` 槽地址；2.28～2.43 只返回直接 malloc/memcpy/free 数据流，旧回调不再消费。
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。

@@ -49,6 +49,10 @@ primary overflow(+0x18) = 原表 xsputn(+0x38)
 
 两个 C PoC 都只保留了 fake FILE、fake obstack 和一次错位调用；2.24～2.36 那个文件末尾还补了一段 exit/flush 布局的伪代码。要形成完整的攻击链，还需要把 fake FILE 投递到 `_IO_list_all` 或某个标准流上，并确认 exit 调用点当时的 `rdx` 值可用。
 
+## Python 离线板子
+
+`lys.py` 的 `build_house_of_lys(version, wfile_jumps_addr, obstack_addr, chunkfun_addr, extra_arg, object_base=0, next_free=1, chunk_limit=0)` 生成错位 primary vtable 和 obstack 回调参数。2.23 使用 `_IO_wfile_jumps-0x1120+0x20`，2.24～2.36 使用 `+0x300+0x20`；函数不负责 FILE 投递。
+
 ## 迁移与调试
 
 1. `FILE+0xe0` 处要写的是 fake obstack 的指针，不要把整个 obstack 结构体直接内嵌在这个偏移。

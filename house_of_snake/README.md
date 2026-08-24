@@ -39,6 +39,30 @@ stdio-common/printf_buffer_flush.c 与 malloc/obstack.c。
 
 C 语言 PoC 用的是官方合法 API 来设置回调，所以 API 本身不是漏洞；文件末尾附的中文伪代码，负责说明题目侧要怎样伪造 `__printf_buffer_obstack` 和 obstack 结构的字段。
 
+## Python 离线板子
+
+```python
+from snake import build_house_of_snake
+plan = build_house_of_snake(
+    printf_buffer_addr=printf_buffer,
+    obstack_addr=fake_obstack,
+    object_base=chunk_base,
+    next_free=chunk_end,
+    chunkfun_addr=callback,
+    extra_arg=callback_arg,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `printf_buffer_addr` | 题目可控的 `__printf_buffer_obstack` 对象地址。 |
+| `obstack_addr` | 该对象持有的 fake obstack 地址。 |
+| `object_base` / `next_free` / `chunk_limit` | obstack 当前 chunk 的边界；默认让 `next_free == chunk_limit`。 |
+| `chunkfun_addr` | `_obstack_newchunk` 的分配回调。 |
+| `extra_arg` | callback 第一个参数。 |
+
+返回 `SnakePlan`。由于 `__printf_buffer_obstack` 是内部结构，函数不猜其 obstack 指针偏移；需先从目标 Build ID/调试信息确认再写入。
+
 ## 迁移与调试
 
 1. 先确认题目能不能影响到 `__printf_buffer_obstack` 持有的 obstack 指针，或者能影响该指针指向的对象；光是存在这个公开的回调设置 API，不代表题目自动具备覆盖它的能力。

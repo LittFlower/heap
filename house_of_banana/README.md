@@ -65,6 +65,31 @@ while (count-- > 0)
 
 可执行部分不猜私有偏移；需要伪造独立 link_map 时，直接按文件末尾的中文伪代码和附件 ld.so 重算。
 
+## Python 离线板子
+
+```python
+from banana import build_house_of_banana
+
+writes = build_house_of_banana(
+    fini_dyn_addr=fini_dyn,
+    fini_size_dyn_addr=fini_size_dyn,
+    fini_array_addr=fini_array,
+    callback_addr=callback,
+    link_map_base=map_base,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `fini_dyn_addr` | `DT_FINI_ARRAY` 对应的 `Elf64_Dyn` 地址。 |
+| `fini_size_dyn_addr` | `DT_FINI_ARRAYSZ` 对应的 `Elf64_Dyn` 地址。 |
+| `fini_array_addr` | 进程退出时仍存活的受控 fini 函数数组地址。 |
+| `callback_addr` | 数组中被 `_dl_fini` 调用的函数地址。 |
+| `link_map_base` | 目标 map 的 `l_addr`，用于计算 `d_ptr = fini_array - l_addr`。 |
+| `array_count` | 数组元素数量，默认 1；动态项中保存的是字节数。 |
+
+返回两个动态项和数组的 `MemoryWrite`。函数不生成私有 `link_map`、命名空间链或 `l_info` 偏移；这些必须按目标 ld.so Build ID 解析。
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 上都确实存在。

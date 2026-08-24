@@ -56,6 +56,27 @@ _IO_wsetb(fp, snf->overflow_buf, snf->overflow_buf + 64, 0);
 
 fake `_IO_wstrnfile` 的完整字段关系和写入结果位于 C 文件末尾的“题目布局伪代码”，无需额外生成二进制布局文件。
 
+## Python 离线板子
+
+```python
+from apple1 import build_house_of_apple1
+
+writes = build_house_of_apple1(
+    fake_file_addr=fake_file,
+    wide_data_addr=target_wide,
+    wstrn_jumps_addr=libc_base + wstrn_jumps_offset,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `fake_file_addr` | fake `_IO_wstrnfile` 起点；`overflow_buf` 按 PoC 取 `fake_file + 0xf0`。 |
+| `wide_data_addr` | 要被 `_IO_wstrn_overflow` 写入的 fake `_IO_wide_data` 地址。 |
+| `wstrn_jumps_addr` | 目标 libc 的合法 `_IO_wstrn_jumps` 地址；必须按 Build ID 解析，不能默认套用 `_IO_wfile_jumps - 0x300`。 |
+| `file_mode` | FILE `_mode`，默认 `1`，用于保持宽字符路径。 |
+
+返回两个 `MemoryWrite`：fake FILE 入口字段和 wide_data 前 `0x40` 字节的八个已知值写入。函数不负责 `_IO_list_all` 投递或 `__overflow` 触发。
+
 C PoC 为了跨发行版运行，使用上游 x86-64 本范围内 `_IO_wstrn_jumps = _IO_wfile_jumps - 0x300` 的关系；迁移到题目时必须从附件 libc 的隐藏 symbol/反汇编重新取偏移。
 
 ## 迁移与调试

@@ -38,6 +38,10 @@
 
 C 文件末尾列出了三段 wide-data 偏移和 stderr fake FILE 的伪代码。这个可执行主体只用来隔离验证 Kiwi 专属的触发器，最终的回调、ROP 链和投递方式仍然要按具体题目替换。
 
+## Python 离线板子
+
+`kiwi.py` 的 `build_house_of_kiwi(version, top_size=0x21)` 只生成旧版 `__malloc_assert -> fflush(stderr)` 触发器参数。`version` 支持 2.23～2.35；返回 `wide_vtable_offset`（2.23～2.29 为 `0x130`，2.30 为 `0xf0`，2.31～2.35 为 `0xe0`）和 `top_size`。函数不生成 stderr、FILE 或 top chunk 投递。
+
 ## 迁移与调试
 
 1. 覆盖 top size，让 sysmalloc 里的 old-top 不变量检查失败；只是触发一次普通的 `malloc_printerr` 并不等价于真正进入 `__malloc_assert`。

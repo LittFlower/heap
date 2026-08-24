@@ -90,6 +90,55 @@ _fileno        = 1
 
 两份 C 文件末尾分别列出 stdin/stdout 低字段的题目补丁伪代码；不再生成绑定占位地址的二进制 payload。
 
+## Python 离线板子
+
+[`io_file.py`](./io_file.py) 只生成标准 FILE 的字段补丁，不负责题目交互、地址投递或触发。返回值是 `FieldPatch` 元组；`offset` 是 FILE 内偏移，`data` 是小端字节，`field` 是字段名。这样可以直接映射到题目的 `edit(offset, data)` 或合并为一份 FILE 镜像。
+
+```python
+from io_file import (
+    apply_patches,
+    build_stdin_arbitrary_write,
+    build_stdout_arbitrary_read,
+)
+
+# stdin: 后续 fgetc/fread 等 underflow 把输入写到 target
+patches = build_stdin_arbitrary_write(
+    target=heap_or_bss_addr,
+    length=0x80,
+    fd=0,
+    current_flags=known_stdin_flags,  # 未知时省略，保留原 flags
+)
+for patch in patches:
+    edit(stdin_addr + patch.offset, patch.data)
+
+# stdout: 后续 fflush(stdout) 把 target..target+length 写到 fd=1
+patches = build_stdout_arbitrary_read(target=libc_or_stack_addr, length=0x40)
+file_image = apply_patches(patches)
+```
+
+### `build_stdin_arbitrary_write` 参数
+
+| 参数 | 含义 |
+|---|---|
+| `target` | stdin underflow 通过 `read` 写入的目标地址。 |
+| `length` | 允许本次 `read` 写入的最大字节数；必须大于 0。 |
+| `fd` | 被劫持 stdin 使用的文件描述符，默认是 `0`；题目若从其他 fd 提供输入可修改。 |
+| `current_flags` | 当前 `_flags` 值；传入后函数只清除 `_IO_NO_READS` 和 `_IO_EOF_SEEN`，其余位保持不变；未知时省略。 |
+
+返回的 `FieldPatch` 中，`offset` 是 FILE 内偏移，`data` 是需要写入的 little-endian 字节，`field` 是字段名。`_flags` 和 `_fileno` 都按 4 字节生成，避免覆盖相邻字段。
+
+### `build_stdout_arbitrary_read` 参数
+
+| 参数 | 含义 |
+|---|---|
+| `target` | stdout `fflush` 通过 `write` 输出的进程内存地址。 |
+| `length` | 输出区间长度；函数设置为 `[target, target + length)`。 |
+| `fd` | stdout 最终写入的文件描述符，默认是 `1`；远程题目可按实际输出 fd 修改。 |
+
+该函数设置 `_IO_read_*`、`_IO_write_*` 和 `_IO_buf_*` 的一致区间，并令 `_IO_read_end == _IO_write_base`，避免 pipe/socket 场景下进入不必要的 `lseek` 分支。
+
+函数只覆盖本目录已验证的 x86-64 glibc 2.23～2.43 FILE 数据流；`_fileno` 使用 4 字节写入，避免覆盖相邻的 `_flags2`。目标地址、现有 flags、投递方式和触发函数必须由题目 exploit 自己提供。
+
 运行示例：
 
 ```bash

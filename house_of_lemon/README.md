@@ -72,6 +72,10 @@ cd heap_ultimate_cheatsheet
 [+] House of Lemon: stdout 的虚表调用已经劫持到堆上。
 ```
 
+## Python 离线板子
+
+`lemon.py` 的 `build_house_of_lemon(stdout_addr, main_arena_addr, fake_chunk_header_addr, request_size=0x17b0, global_max_fast=0x2000)` 计算已验证 2.23 布局。`stdout_addr` 是 stdout 对象，`main_arena_addr` 用于计算 fastbin index，`fake_chunk_header_addr` 是预期写入 stdout vtable 槽的堆地址；函数只接受 PoC 的 `0x17c0` chunk 和扩大的 `global_max_fast`，不负责前置任意写。
+
 ## 迁移到题目
 
 1. 用 unsafe unlink、unsorted-bin write，或者题目里现成的任意写去扩大 `global_max_fast`；**一定要先分配好这个超大尺寸的 chunk，再去改大该值**，否则这个尺寸对应的 `malloc` 路径会提前把 arena 弄坏。

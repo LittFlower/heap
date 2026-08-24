@@ -94,6 +94,10 @@ glibc 2.24 起对 primary vtable 做 `IO_validate_vtable`；这里 primary 指�
 
 PoC 里的 `dlsym` 只是用来代替真实题目中的 libc 泄露和符号偏移计算；直接覆写 `_IO_list_all` 也只是代替把伪造 FILE“投递”（也就是写进堆或其他可控内存）到目标地址这一步。这两步都不是 House of Some 这个手法本身自带的攻击能力，实战中都要换成题目提供的漏洞原语去完成。
 
+## Python 离线板子
+
+`some.py` 的 `build_house_of_some(version, file_addr, wide_addr, file_jumps_addr, wfile_jumps_addr, target_addr, target_length, fd, lock_addr, list_all_addr, prevchain_addr=None)` 生成第一跳 `read(fd, target, length)` 的 FILE/wide_data 镜像。`version` 选择 `+0x130/+0xf0/+0xe0`；2.40+ 必须传 `prevchain_addr`，通常为 `_IO_list_all` 槽地址。函数不负责链式 RWRWR、投递或触发。
+
 ## 源码与原始资料
 
 - [House of Some 原始文章](https://blog.csome.cc/p/house-of-some/)

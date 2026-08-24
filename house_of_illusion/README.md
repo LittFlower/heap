@@ -102,6 +102,13 @@ shifted 原语经过 `_IO_new_file_finish -> _IO_default_finish -> _IO_un_link`�
 
 PoC 中 `dlsym` 只是替代题目里的 libc 泄露与符号偏移，直接改 `_IO_list_all` 只是替代 heap 投递原语；二者都不应被误解成攻击能力来源。
 
+## Python 离线板子
+
+- `build_illusion_shifted_write(version, file_addr, file_jumps_addr, lock_addr, fd, target_addr, length, io_list_all_addr=None)`：生成 `fd -> target` 任意写；2.40+ 要求 `io_list_all_addr` 填入 `_prevchain`。
+- `build_illusion_normal_read(version, file_addr, file_jumps_addr, lock_addr, output_fd, target_addr, length, io_list_all_addr=None)`：生成正常 `_IO_file_jumps` 的 `target -> output_fd` 泄露；2.40+ 同样要求 `_prevchain`。
+
+两个函数返回单项 `MemoryWrite`，不负责 `_IO_list_all` 投递、触发 `fflush(NULL)` 或 socket/pipe 交互。
+
 ## 源码与原始资料
 
 - [House of Illusion 原始文章](https://enllus1on.github.io/2024/01/22/new-read-write-primitive-in-glibc-2-38/)
