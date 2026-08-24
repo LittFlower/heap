@@ -43,8 +43,10 @@ def build_house_of_apple1(
 ) -> tuple[MemoryWrite, ...]:
     """生成 Apple1 的 fake FILE 和八个已知值写入。
 
-    fake_file_addr: fake `_IO_wstrnfile` 起点；wide_data_addr: 目标 `_IO_wide_data`。
-    wstrn_jumps_addr: 目标 libc 的合法 `_IO_wstrn_jumps`，必须按 Build ID 解析。
+    fake_file_addr: fake `_IO_wstrnfile` 起点；
+    wide_data_addr: 目标 `_IO_wide_data`。
+    wstrn_jumps_addr: 目标 libc 的合法 `_IO_wstrn_jumps`，必须按
+        Build ID 解析。
     file_mode: FILE `_mode`，PoC 默认 1 以保持宽字符路径。
     """
 

@@ -46,7 +46,8 @@ def build_house_of_error(
 ) -> tuple[MemoryWrite, ...]:
     """生成 `_IO_mem_sync` 双写消费点。
 
-    file_addr: 真实/伪造 FILE 地址；mem_jumps_addr: `_IO_mem_jumps` 地址。
+    file_addr: 真实/伪造 FILE 地址；
+    mem_jumps_addr: `_IO_mem_jumps` 地址。
     bufloc_addr/sizeloc_addr: 两个被写入的目标地址。
     write_base_addr: `_IO_write_base`，第一次写入的值。
     write_length: `_IO_write_ptr - _IO_write_base`，第二次写入的 size 值。

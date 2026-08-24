@@ -143,7 +143,9 @@ for w in writes:
 
 ### 返回对象
 
-返回 `MemoryWrite` 元组。`MemoryWrite` 每个成员含义：
+返回完整对象的 `MemoryWrite` 元组。固定包含 FILE、wide_data 和 codecvt；
+2.30+ 还包含独立 fake `__gconv_step`。
+`MemoryWrite` 每个成员含义：
 
 | 成员 | 含义 |
 |---|---|
@@ -151,7 +153,7 @@ for w in writes:
 | `data` | 要写入的小端字节串（`bytes`）。 |
 | `label` | 该写入的用途标签，用于调试和识别。 |
 
-各写入内容：
+各 payload 对象：
 
 ```text
 FILE 字段写入（file_addr 处）：

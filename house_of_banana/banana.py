@@ -44,8 +44,9 @@ def build_house_of_banana(
     fini_dyn_addr: `ElfW(Dyn)` 地址，tag 为 DT_FINI_ARRAY 的项。
     fini_size_dyn_addr: `DT_FINI_ARRAYSZ` 动态项地址。
     fini_array_addr: 进程中长期存活的 fini 函数数组地址。
-    callback_addr: 数组元素调用地址；link_map_base: 对应 `l_addr`。
-    array_count: 数组元素数量，按 glibc 以字节数保存到 `d_val`。
+    callback_addr: 数组元素调用地址；
+    link_map_base: 对应 `l_addr`。
+    array_count: 数组元素数量；glibc 将其按字节数保存到 `d_val`。
     """
 
     for name, value in {

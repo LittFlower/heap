@@ -106,23 +106,28 @@ def build_house_of_apple3(
     }.items():
         _uint(name, value)
 
-    writes: list[MemoryWrite] = [
-        _write(file_addr + FILE_CODECVT, _ptr("fake_codecvt_addr", fake_codecvt_addr), "FILE._codecvt"),
-        _write(file_addr + FILE_WIDE_DATA, _ptr("wide_data_addr", wide_data_addr), "FILE._wide_data"),
-        _write(file_addr + FILE_MODE, (1).to_bytes(4, "little"), "FILE._mode"),
-        _write(file_addr + FILE_READ_BASE, _ptr("external_input_addr", external_input_addr), "FILE._IO_read_base"),
-        _write(file_addr + FILE_READ_PTR, _ptr("external_input_addr", external_input_addr), "FILE._IO_read_ptr"),
-        _write(file_addr + FILE_READ_END, _ptr("external_input_end", external_input_addr + 1), "FILE._IO_read_end"),
-    ]
+    file_image = bytearray(0xD8)
+    file_fields = (
+        (FILE_CODECVT, _ptr("fake_codecvt_addr", fake_codecvt_addr)),
+        (FILE_WIDE_DATA, _ptr("wide_data_addr", wide_data_addr)),
+        (FILE_MODE, (1).to_bytes(4, "little")),
+        (FILE_READ_BASE, _ptr("external_input_addr", external_input_addr)),
+        (FILE_READ_PTR, _ptr("external_input_addr", external_input_addr)),
+        (
+            FILE_READ_END,
+            _ptr("external_input_end", external_input_addr + 1),
+        ),
+    )
+    for offset, data in file_fields:
+        file_image[offset:offset + len(data)] = data
+
+    writes: list[MemoryWrite] = []
     if current_flags is not None:
         _uint("current_flags", current_flags, 32)
-        writes.append(
-            _write(
-                file_addr + FILE_FLAGS,
-                (current_flags & ~_CLEAR_FOR_WIDE_INPUT).to_bytes(4, "little"),
-                "FILE._flags",
-            )
-        )
+        flags = current_flags & ~_CLEAR_FOR_WIDE_INPUT
+        file_image[FILE_FLAGS:FILE_FLAGS + 4] = flags.to_bytes(4, "little")
+
+    writes.append(_write(file_addr, bytes(file_image), f"FILE ({version})"))
 
     wide = _image(
         0x40,
@@ -137,14 +142,38 @@ def build_house_of_apple3(
     writes.append(_write(wide_data_addr, wide, "wide_data buffers"))
 
     if layout == "legacy":
-        codecvt = _image(0x20, ((callback_offset, _ptr("callback_addr", callback_addr)),))
+        codecvt = _image(
+            0x20,
+            ((callback_offset, _ptr("callback_addr", callback_addr)),),
+        )
     elif layout == "transition":
-        codecvt = _image(0x10, ((0x00, (1).to_bytes(8, "little")), (0x08, _ptr("fake_step_addr", fake_step_addr))))
-        step = _image(0x30, ((0x00, b"\x00" * 8), (0x28, _ptr("callback_addr", callback_addr))))
+        codecvt = _image(
+            0x10,
+            (
+                (0x00, (1).to_bytes(8, "little")),
+                (0x08, _ptr("fake_step_addr", fake_step_addr)),
+            ),
+        )
+        step = _image(
+            0x30,
+            (
+                (0x00, b"\x00" * 8),
+                (0x28, _ptr("callback_addr", callback_addr)),
+            ),
+        )
         writes.append(_write(fake_step_addr, step, "fake __gconv_step"))
     else:
-        codecvt = _image(0x08, ((0x00, _ptr("fake_step_addr", fake_step_addr)),))
-        step = _image(0x30, ((0x00, b"\x00" * 8), (0x28, _ptr("callback_addr", callback_addr))))
+        codecvt = _image(
+            0x08,
+            ((0x00, _ptr("fake_step_addr", fake_step_addr)),),
+        )
+        step = _image(
+            0x30,
+            (
+                (0x00, b"\x00" * 8),
+                (0x28, _ptr("callback_addr", callback_addr)),
+            ),
+        )
         writes.append(_write(fake_step_addr, step, "fake __gconv_step"))
     writes.append(_write(fake_codecvt_addr, codecvt, f"fake codecvt ({version})"))
     return tuple(writes)

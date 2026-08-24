@@ -98,10 +98,13 @@ def build_illusion_shifted_write(
 ) -> tuple[MemoryWrite, ...]:
     """生成 shifted vtable 的 fd -> target 任意写布局。
 
-    version: 2.23～2.39 不需要 `_prevchain`，2.40～2.43 必须提供链表头槽地址。
-    file_addr/lock_addr/fd/target_addr/length: fake FILE、锁、输入 fd 和 read 区间。
+    version: 2.23～2.39 不需要 `_prevchain`，2.40～2.43 必须提供
+        链表头槽地址。
+    file_addr/lock_addr/fd/target_addr/length: fake FILE、锁、输入 fd
+        和 read 区间。
     file_jumps_addr: `_IO_file_jumps`，函数写入 `file_jumps - 8`。
-    io_list_all_addr: 2.40+ fake 头节点的 `_prevchain`，通常是 `_IO_list_all` 地址。
+    io_list_all_addr: 2.40+ fake 头节点的 `_prevchain`，通常是
+        `_IO_list_all` 地址。
     """
 
     _check_version(version)

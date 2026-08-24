@@ -72,7 +72,7 @@ writes = build_house_of_apple2(
     narrow_buffer_addr=0x300000, # 窄字符缓冲区
 )
 
-# 返回 MemoryWrite 元组；每个元素是 (address, data, label)
+# 返回 3 个 MemoryWrite：FILE、wide_data、wide_vtable 三个完整对象镜像
 for w in writes:
     print(w.label, hex(w.address), w.data.hex())
 
@@ -110,7 +110,8 @@ for w in writes:
 
 ### 返回对象
 
-返回 `MemoryWrite` 元组。`MemoryWrite` 每个成员含义：
+返回 3 个 `MemoryWrite`，分别是完整的 FILE、wide_data 和 wide_vtable 镜像。
+`MemoryWrite` 每个成员含义：
 
 | 成员 | 含义 |
 |---|---|
@@ -118,7 +119,7 @@ for w in writes:
 | `data` | 要写入的小端字节串（`bytes`）。 |
 | `label` | 该写入的用途标签，用于调试和识别。 |
 
-各写入内容：
+各 payload 对象：
 
 ```text
 FILE 字段写入（file_addr 处）：
@@ -137,7 +138,8 @@ fake wide_vtable（fake_wide_vtable_addr 处）：
     零填充到 +0x68，槽值 = callback_addr
 ```
 
-使用时对每个 `w in writes` 执行 `write_primitive(w.address, w.data)` 即可。
+使用时对每个 `w in writes` 执行 `write_primitive(w.address, w.data)` 即可；
+调用者不需要自己拼接十几个 FILE 字段补丁。
 
 ### 调用者必须提供
 

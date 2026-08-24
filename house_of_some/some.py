@@ -77,7 +77,8 @@ def build_house_of_some(
     file_addr/wide_addr: fake FILE 和 fake wide_data 地址。
     file_jumps_addr: `_IO_file_jumps`，用于 wide vtable -0x48。
     wfile_jumps_addr: 合法 primary `_IO_wfile_jumps`。
-    target_addr/target_length/fd: 第一跳 read 的目标、长度和文件描述符。
+    target_addr/target_length/fd: 第一跳 read 的目标、长度和文件
+        描述符。
     lock_addr: FILE `_lock` 地址；list_all_addr: `_IO_list_all` 槽地址。
     prevchain_addr: 2.40+ 的 `_prevchain`，通常为 list_all_addr。
     """

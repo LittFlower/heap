@@ -41,8 +41,10 @@ def build_house_of_husk(
 ) -> tuple[MemoryWrite, ...]:
     """生成两张 printf handler 表的目标写入计划。
 
-    printf_function_table_addr/printf_arginfo_table_addr: 目标 libc 全局表指针地址，必须按 Build ID 解析。
-    function_table_data_addr/arginfo_table_data_addr: 两张伪表的实际可写地址。
+    printf_function_table_addr/printf_arginfo_table_addr: 目标 libc
+        全局表指针地址，必须按 Build ID 解析。
+    function_table_data_addr/arginfo_table_data_addr: 两张伪表的
+        实际可写地址。
     format_char: 被触发的格式字符 ASCII 值，例如 `ord('X')`。
     handler_addr: 伪表中对应槽位的回调地址。
     slot_bias: glibc 表索引偏移；按 PoC 默认是 2。
