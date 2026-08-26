@@ -22,13 +22,9 @@ while IFS= read -r -d '' method_dir; do
 done < <(find "$root_dir" -mindepth 1 -maxdepth 1 -type d \
   ! -name build ! -name tools ! -name '.*' -print0)
 
-# 手法目录只保留 C 教学 PoC。Python 仅用于 tools/ 下的维护脚本。
-while IFS= read -r -d '' python_file; do
-  printf '[FAIL] 手法目录仍有 Python 文件：%s\n' \
-    "${python_file#"$root_dir/"}" >&2
-  fail=1
-done < <(find "$root_dir" -mindepth 2 -type f -name '*.py' \
-  ! -path "$root_dir/tools/*" ! -path "$root_dir/build/*" -print0)
+# Python 消费型板子与同目录测试是正式的离线接口；其余 Python 维护脚本仍应放在 tools/。
+# 这里不再禁止手法目录中的 Python，由全量 pytest/compileall 和下方静态检查负责验证。
+
 
 # 所有 C 教学 PoC 至少要有汉字说明。
 while IFS= read -r -d '' source_file; do

