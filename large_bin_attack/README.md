@@ -17,6 +17,13 @@
 | 版本边界应如何理解 | 2.30 是同一家族的新插入分支，属于换实现；2.42 检查 nextsize 反向环，经典“只改一个 `bk_nextsize`、任意初值目标”被封堵。若能预构造整套 fake ring，赋值仍可能发生，但那是**强前置残余**。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- victim 与已有节点都必须是物理 `chunksize >= MIN_LARGE_SIZE (0x400)` 的 large chunks，并落入攻击分支要求的 largebin/nextsize 排序关系；guard 要阻止它们彼此或与 top 合并。
+- 2.30～2.41 的常用分支要求新插入 victim 比当前最小节点更小。PoC 用 request `0x428 -> chunksize 0x430` 与 `0x418 -> 0x420`；可以更换数值，但 bin 归属、大小顺序和触发 request 必须同时重算。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
 - 2.30 以前可同时改 `bk` 与 `bk_nextsize`，写条件更宽松。

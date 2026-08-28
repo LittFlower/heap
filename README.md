@@ -1,6 +1,16 @@
-# CTF glibc Heap Ultimate Cheatsheet（2.23～2.43）
+# CTF Pwn Ultimate Cheatsheet
 
-这份目录面向 x86-64 CTF pwn：共 **60 种手法、141 份 C PoC**。版本结论以 GNU glibc 上游源码为基线，并分别说明发行版回移、附件 Build ID、堆原语投递和最终触发点。
+这份目录面向 x86-64 CTF pwn。堆专题包含 **60 种手法、141 份 C PoC**，版本结论以 GNU glibc 上游源码为基线，并分别说明发行版回移、附件 Build ID、堆原语投递和最终触发点。父目录积累的非堆笔记已经按分析阶段重新整理到独立入口，不与堆版本矩阵混写。
+
+## 总导航
+
+- [非堆 Pwn 笔记](./pwn_notes/README.md)：现场流程、ELF/保护机制、动态链接、内存破坏、跨架构、fuzzing，以及输入、ROP、seccomp、脚本、C++、Rust/VM、Kernel、Protobuf 等专题；另有中英文博客、Writeup 与会议材料索引。
+- [堆手法原语总表](./PRIMITIVE_REQUIREMENTS_MATRIX.md)：从题目已有的输入原语和目标输出反查手法。
+- [malloc size/bin 映射](./MALLOC_SIZE_BIN_MAP.md)：request、物理 chunk size、bin index 与版本边界。
+- [glibc 源码时间线](./SOURCE_TIMELINE.md)：重要上游提交、消费路径与失效原因。
+- [calloc 相关手法](./CALLOC_RELATED_TECHNIQUES.md)：calloc 的 tcache 路径、TSU 依赖和各版本差异。
+
+下面是堆专题的使用方式和完整索引。
 
 ## 怎么读
 
@@ -12,9 +22,17 @@
 
 `malloc(req)`、物理 chunk size、各 bin index 和 2.42/2.43 tcache 上限容易混淆时，先查 [MALLOC_SIZE_BIN_MAP.md](./MALLOC_SIZE_BIN_MAP.md)。
 
-本文用三个词拆开一条利用链：**投递**是把伪造 chunk、FILE 或指针送到目标位置；**消费路径**是 glibc 真正读取这些字段的源码分支；**最终触发点**是把控制转成泄漏、任意写或控制流的函数调用。
+题目提供 `calloc` 或内部存在可控 calloc 调用时，另查 [calloc 相关堆利用手法速查](./CALLOC_RELATED_TECHNIQUES.md)：其中区分了 2.26～2.40 的 tcache-get 绕路、2.41 语义变化、TSU 家族的硬依赖，以及仅把 calloc 当普通分配函数的 PoC。
 
-判断版本变化只是调偏移，还是已经删掉消费路径时，先查 [PRIMITIVE_REQUIREMENTS_MATRIX.md](./PRIMITIVE_REQUIREMENTS_MATRIX.md)。该表列出全部 60 种手法的输入原语、结构条件、输出原语和真实失效原因。
+每个手法 README 都有独立的 **Chunk size 要求**。除非明确写成 `malloc(...)`/request，其中的 size 一律指去掉标志位后的物理 `chunksize`；区间条件描述利用机制的硬要求，PoC 常量只是一组验证过的示例。标"无固有要求"的 FILE/回调手法，还是可能受前置投递原语的尺寸限制，得继续查对应 bin attack 的 README。
+
+本文用三个词拆开一条利用链：
+
+- **投递**：把伪造 chunk、FILE 或指针送到目标位置。
+- **消费路径**：glibc 真正读取这些字段的源码分支。
+- **最终触发点**：把控制转成泄漏、任意写或控制流的函数调用。
+
+判断版本变化只是调偏移，还是已经删掉消费路径时，先查 [PRIMITIVE_REQUIREMENTS_MATRIX.md](./PRIMITIVE_REQUIREMENTS_MATRIX.md)。这张表列出全部 60 种手法的输入原语、结构条件、输出原语和真实失效原因。
 
 版本范围表示上游 tag 的堆管理器行为，不保证 Ubuntu/Debian 安全更新包没有回移补丁。例如旧 Ubuntu 18.04 的“glibc 2.27”安全包可能已经回移 tcache double-free key；验证历史边界时要使用首发包或从源码构建。
 
@@ -24,7 +42,7 @@
 - **题目级 exploit**：绑定公开 challenge 菜单与附件构建，主要用来读完整阶段。
 - **布局说明**：复杂 FILE/link_map/组合 House 的布局数据与条件检查，放在 C PoC 末尾；不能脱离题目原语承诺通用 RCE。
 
-版本表中的“失效”只针对 README 声明的最小输入和消费路径。另一条链能得到相同输出，不代表旧手法仍可用；投递或最终触发点失效，也不代表中间堆原语已经消失。证据不足时只写“公开 PoC/原始链未迁移”，不写成绝对不可用。
+版本表中的"失效"只针对 README 声明的最小输入和消费路径，不是更广义的判断。换一条链拿到同样输出，不代表旧手法本身还能用；投递或最终触发点失效，也不代表中间的堆原语已经消失。证据不够时统一写"公开 PoC/原始链未迁移"，不写成绝对不可用。
 
 ## 教学 PoC 的代码风格
 
@@ -151,7 +169,7 @@ cd heap_ultimate_cheatsheet
 
 Runner 使用老 GCC 构建，再放到对应 Ubuntu/glibc 运行。2.23、2.26～2.30 若在 `build/glibc-exact/<package-id>/` 找到精确 loader，会优先使用 glibc-all-in-one 首发包，避免安全更新 backport 改写历史边界。具体准备方法见 [tools/README.md](./tools/README.md)。
 
-本次 x86-64 实测版本、198 项动态矩阵、负测试和 Build-ID 条件说明见 [VALIDATION.md](./VALIDATION.md)。141 个 C PoC 均至少有一个对应 glibc 运行项。
+本次 x86-64 实测版本、198 项动态矩阵、负测试和 Build-ID 条件说明见 [VALIDATION.md](./VALIDATION.md)。141 个 C PoC 都至少有一个对应 glibc 运行项。
 
 ## 资料与口径
 
@@ -166,9 +184,9 @@ Runner 使用老 GCC 构建，再放到对应 Ubuntu/glibc 运行。2.23、2.26�
 - [ALateFall/blogs：system 笔记](https://github.com/ALateFall/blogs/tree/main/system)
 - [看雪《CTF 中 glibc 堆利用及 IO_FILE 总结》离线存档](/Users/flower/Zotero/storage/QPI8VQE6/thread-272098-1.html)
 
-参考文章发表于 2023 年，故其中“至今”不能自动延伸到 2.43。本整理按 2.41～2.43 新源码重新收窄了 Kauri、Rust/Crust、Corrosion、Husk 与多个 largebin 投递型 FSOP House 的结论。
+参考文章发表于 2023 年，里面的"至今"不能直接套到 2.43。本整理按 2.41～2.43 新源码重新收窄了 Kauri、Rust/Crust、Corrosion、Husk 与多个 largebin 投递型 FSOP House 的结论。
 
-指定资料、how2heap 与本地笔记中的全部名称如何映射到目录，见 [TECHNIQUE_COVERAGE_MAP.md](./TECHNIQUE_COVERAGE_MAP.md)；逐手法的输入/输出原语与真实失效性质见 [PRIMITIVE_REQUIREMENTS_MATRIX.md](./PRIMITIVE_REQUIREMENTS_MATRIX.md)；新增资料具体补进了什么、哪些旧说法被源码收窄，见 [ADDITIONAL_REFERENCES.md](./ADDITIONAL_REFERENCES.md)。
+指定资料、how2heap 与本地笔记中的全部名称如何映射到目录，见 [TECHNIQUE_COVERAGE_MAP.md](./TECHNIQUE_COVERAGE_MAP.md)。逐手法的输入/输出原语与真实失效性质见 [PRIMITIVE_REQUIREMENTS_MATRIX.md](./PRIMITIVE_REQUIREMENTS_MATRIX.md)。新增资料具体补进了什么、哪些旧说法被源码收窄，见 [ADDITIONAL_REFERENCES.md](./ADDITIONAL_REFERENCES.md)。
 
 Malloc Maleficarum 中 Prime/Chaos 为何没有硬造一个 2.23+ PoC，见 [HISTORICAL_NAME_BOUNDARIES.md](./HISTORICAL_NAME_BOUNDARIES.md)。
 

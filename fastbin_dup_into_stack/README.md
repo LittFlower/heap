@@ -17,6 +17,13 @@
 | 版本边界应如何理解 | 2.26/2.32/2.41/2.42 都是实现适配；2.43 fastbin 删除为硬边界。相同 AAF 可改用 tcache poisoning，不代表 fastbin 版仍在。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- 真实 victim、fake chunk 的 `size` 和最终 `malloc/calloc` 必须对应**同一个 fastbin class**，即物理 `chunksize` 位于 `[MINSIZE, get_max_fast()]`。
+- 没有固定的唯一 class；PoC 选 `malloc(8)`/`calloc(1,8)`，物理 `0x20`。fake header 中应写该物理尺寸并保留所需标志位，不能把用户 request `8` 直接写进 header。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
 - 2.26 起先处理 tcache。

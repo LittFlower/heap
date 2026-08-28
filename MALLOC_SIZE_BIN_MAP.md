@@ -1,6 +1,6 @@
 # x86-64 malloc size 与 bin 速查
 
-本页只讨论本项目基线：x86-64、`SIZE_SZ=8`、`MALLOC_ALIGNMENT=0x10`、`MINSIZE=0x20`。比赛附件若改变 ABI、启用 memory tagging 或带发行版补丁，应回到其源码重算。
+本页只讨论本项目基线：x86-64、`SIZE_SZ=8`、`MALLOC_ALIGNMENT=0x10`、`MINSIZE=0x20`。比赛附件要是改了 ABI、开了 memory tagging 或带发行版补丁，就回到它的源码重算。
 
 ## 用户请求到物理 chunk size
 
@@ -54,7 +54,7 @@ encoded_next = ((uintptr_t)&entry->next >> 12) ^ (uintptr_t)target;
 ```
 
 - 2.32+ small/large tcache chunk 内的 `entry->next` 和 fastbin `fd` 使用 safe-linking（fastbin 到 2.42）。
-- `tcache->entries[idx]` 的**头指针本身是明文**；从 large-tcache 链中间插入/删除时，指向中间节点的槽位位于前一节点的 `next` 字段，那个槽位才按其地址编码。
+- `tcache->entries[idx]` 的**头指针本身是明文**；从 large-tcache 链中间插入/删除时，指向中间节点的槽位位于前一节点的 `next` 字段，那个槽位才按它自己的地址编码。
 - 目标地址需满足 0x10 对齐；若堆管理器会继续读取 fake target 的 `next`，还要在目标处准备 `target >> 12` 作为编码后的 NULL。
 
 ## 源码入口

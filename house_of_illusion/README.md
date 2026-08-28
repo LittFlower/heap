@@ -2,12 +2,12 @@
 
 ## 结论
 
-- 目标原语：在劫持 `_IO_list_all` 之后，只借助 glibc 自带的合法 vtable，就能构造出 **fd → 任意内存** 和 **任意内存 → fd** 这两个方向的真实读写能力。
-- 适用范围：**x86-64 glibc 2.23～2.43**。已经在 2.23、2.24、2.38、2.39、2.40 和 2.43 对应的运行时环境里实际跑通过，覆盖了版本区间两端以及 2.40 这个结构切换点，全部验证成功。
-- 前置条件：需要已经拿到 libc 基址，能把 `_IO_list_all` 指向一份自己可控的 `FILE` 结构体，同时保证伪造对象本身、`_lock` 字段和读写目标内存都是可写的，并且手头有一个可用的文件描述符。
-- 严格来说它不是堆分配器层面的原语，而是堆题里常见的一种 FILE 结构体利用链：堆漏洞负责把伪造的 FILE“投递”进 `_IO_list_all`（也就是让全局链表指针指向我们伪造好的这份 FILE），House of Illusion 再把这次投递升级成可以反复使用的读写能力。
+- 目标原语：劫持 `_IO_list_all` 之后，只用 glibc 自带的合法 vtable，就能构造 **fd → 任意内存** 和 **任意内存 → fd** 两个方向的真实读写能力。
+- 适用范围：**x86-64 glibc 2.23～2.43**。已在 2.23、2.24、2.38、2.39、2.40、2.43 实测通过，覆盖版本区间两端和 2.40 这个结构切换点。
+- 前置条件：已有 libc 基址，能把 `_IO_list_all` 指向可控的 `FILE` 结构体；伪造对象本身、`_lock` 字段和读写目标内存都可写，且手头有一个可用的文件描述符。
+- 严格来说它不是堆分配器原语，而是堆题里常见的 FILE 利用链：堆漏洞负责把伪造的 FILE"投递"进 `_IO_list_all`（让全局链表指针指向这份 fake FILE），House of Illusion 再把这次投递升级成可反复使用的读写能力。
 
-需要说明的是，原始文章研究的对象是一份**经过题目定制的 glibc 2.38**：出题人给 `_wide_data` 路径额外补上了 vtable 校验，导致 House of Apple 2 那一类打法失效。House of Illusion 真正的价值在于完全绕开了伪造的 wide vtable，转而利用 `_IO_file_jumps` 这张合法表内部 `-0x8` 的位移来达到同样效果，所以不能把“这个手法是在被打了补丁的 2.38 上发现的”简化误写成“这个手法只能在没打补丁的 stock 2.38 上使用”。
+原始文章研究的是一份**经过题目定制的 glibc 2.38**：出题人给 `_wide_data` 路径额外补上了 vtable 校验，导致 House of Apple 2 一类打法失效。Illusion 的价值在于完全绕开伪造的 wide vtable，改用合法表 `_IO_file_jumps` 内部 `-0x8` 的位移达到同样效果。所以这手法是在打了补丁的 2.38 上发现的，但在没打补丁的 stock 2.38 上一样能用。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -19,6 +19,13 @@
 | 最终输出原语 | fd→目标 AAW + 目标→fd AAR，可串联 |
 | 版本边界应如何理解 | 2.24 白名单允许 section 内部错位；2.40 是双链字段适配。上游 2.23～2.43 的消费路径持续存在；题目私有扩大校验属于环境变化。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
+
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **shifted `_IO_file_jumps` 消费链不绑定 heap size class。** fake FILE 和 I/O 缓冲描述可放在任意足够大、可写、对齐的区域。
+- 正常读写版/shifted read 版中的长度字段是 I/O 长度，不是 malloc request；若通过 heap attack 投递 FILE 链，再按该投递原语检查 chunk size。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
 
 ## 两条数据流
 
@@ -53,7 +60,7 @@ fflush(NULL)
 
 ### 原作者所谓的 write primitive：target → fd
 
-保持 vtable 不变，仍然是 `_IO_file_jumps`，然后构造：
+保持 vtable 不变，还是 `_IO_file_jumps`，然后构造：
 
 ```text
 _IO_write_base = target
@@ -65,9 +72,9 @@ _fileno        = output_fd
 
 ## 为什么 glibc 2.24 的 vtable 校验挡不住它
 
-glibc 2.24 引入的 `IO_validate_vtable` 只要求 vtable 指针落在 `__libc_IO_vtables` 这个 section 里，并不要求它恰好等于某张表的起始地址。`_IO_file_jumps - 0x8` 依然落在这个 section 范围内，所以这道快速检查会直接通过。整个 PoC 既没有把 vtable 指向堆内存，也没有伪造任何函数指针，用的全是合法表内部的偏移。
+glibc 2.24 引入的 `IO_validate_vtable` 只要求 vtable 指针落在 `__libc_IO_vtables` section 里，不要求恰好等于某张表的起始地址。`_IO_file_jumps - 0x8` 还在这个 section 内，所以这道快速检查直接通过。整个 PoC 既没把 vtable 指向堆内存，也没伪造函数指针，用的全是合法表内部的偏移。
 
-这里有必要和 House of Apple 2 划清界限：Apple2 用的 primary vtable 本身是合法的，它控制的是 `fp->_wide_data->_wide_vtable` 这条 wide 路径；而 Illusion 完全不走 fake wide vtable 这条路。
+这里要和 House of Apple 2 划清界限：Apple2 的 primary vtable 本身合法，它控制的是 `fp->_wide_data->_wide_vtable` 这条 wide 路径；Illusion 完全不走 fake wide vtable。
 
 ## glibc 2.40：必须补 `_prevchain`
 
@@ -84,7 +91,7 @@ shifted 原语经过 `_IO_new_file_finish -> _IO_default_finish -> _IO_un_link`�
 2.40～2.43：pr = fp->_prevchain; *pr = fp->_chain
 ```
 
-所以 2.40+ 的 fake FILE 必须令 `fp->_prevchain = &_IO_list_all`（当 fake 是链表头时）。PoC 始终在 `+0xb8` 写该值：旧版本只覆盖无语义 padding，新版本满足双链表不变量。省略它会在 2.40～2.43 的摘链阶段空指针崩溃，这也是“2.38 PoC 直接搬到新 libc”最容易漏掉的版本断点。
+所以 2.40+ 的 fake FILE 必须令 `fp->_prevchain = &_IO_list_all`（当 fake 是链表头时）。PoC 始终在 `+0xb8` 写这个值：旧版本只覆盖无语义 padding，新版本满足双链表不变量。省略它会在 2.40～2.43 摘链阶段空指针崩溃——这是"2.38 PoC 直接搬到新 libc"最容易漏掉的版本断点。
 
 ## PoC
 
@@ -100,7 +107,7 @@ shifted 原语经过 `_IO_new_file_finish -> _IO_default_finish -> _IO_un_link`�
 ./tools/run_in_docker.sh 2.43 house_of_illusion/poc_normal_write_2.23_2.43.c
 ```
 
-PoC 中 `dlsym` 只是替代题目里的 libc 泄露与符号偏移，直接改 `_IO_list_all` 只是替代 heap 投递原语；二者都不应被误解成攻击能力来源。
+PoC 中 `dlsym` 只是替代题目里的 libc 泄露与符号偏移，直接改 `_IO_list_all` 只是替代 heap 投递原语，二者都不是攻击能力来源。
 
 ## 源码与原始资料
 
@@ -110,4 +117,4 @@ PoC 中 `dlsym` 只是替代题目里的 libc 泄露与符号偏移，直接改 
 - [glibc `fileops.c`：`_IO_new_file_finish`、`_IO_do_write` 与底层 read/write](https://github.com/bminor/glibc/blob/master/libio/fileops.c)
 - [glibc `libioP.h`：`IO_validate_vtable`](https://github.com/bminor/glibc/blob/master/libio/libioP.h)
 
-发行版 backport 或题目自行扩大 `IO_validate_vtable` 的语义时要重新实测；原题正是定制 libc，不能只看版本号。
+发行版 backport 或题目自行扩大 `IO_validate_vtable` 语义时要重新实测；原题正是定制 libc，不能只看版本号。

@@ -22,6 +22,14 @@
 | 版本边界应如何理解 | freed-unsorted 子型 2.29 被完整性检查封住；这是该弱布局的硬边界。free 前改 in-use size→真实 top 的同一“重叠目标”仍到 2.43，属于换布局而非只改偏移。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **free 后改 unsorted size：有范围要求。** victim 必须先进入 unsorted bin；实战通常选物理 `chunksize` 大于 fastbin 和默认 small-tcache 上限，或先把对应 tcache 填满。PoC 的 `malloc(0x4f8)` 对应物理 `0x500`。
+- 被改大的 `chunksize` 必须按 `0x10` 对齐、至少覆盖随后要重叠的区域，并让 `next_chunk(victim)` 落在可读写且元数据自洽的位置；它不是任意大整数。
+- **free 前改 in-use size→top：无固定 bin 区间。** 伪 size 仍须为不小于 `MINSIZE` 的对齐物理尺寸，且伪边界要精确落到真实 top；free 后必须能走合并路径而不是被 tcache/旧 fastbin 提前截走。PoC 的 `0x500`/`0x80` 只是示例排布。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 旧式 freed-unsorted size overwrite
 
 布局如下：
@@ -54,7 +62,7 @@ p1 | p2(size=0x500, still in use) | p3(size=0x80) | top
          \-- overflow: size 0x500 -> 0x580 --/
 ```
 
-这里先改 p2.size，再 `free(p2)`；伪造后的 next 恰好是真实 top。`free` 认为 p2 与 top 相邻并把它们合并，新分配从 p2 起返回，覆盖中间仍在使用的 p3。它规避的是特定的 2.29 unsorted 取出检查，并不意味着任意伪 size 都能通过现代 `_int_free_merge_chunk` 的 size、`prev_inuse`、top 与 system_mem 检查。
+这里先改 p2.size，再 `free(p2)`；伪造后的 next 恰好是真实 top。`free` 认为 p2 与 top 相邻并把它们合并，新分配从 p2 起返回，覆盖中间仍在使用的 p3。它绕开的只是 2.29 的 unsorted 取出检查，任意伪 size 还得过现代 `_int_free_merge_chunk` 的 size、`prev_inuse`、top 和 system_mem 检查。
 
 ## PoC
 

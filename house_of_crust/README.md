@@ -9,7 +9,7 @@
 | [`poc_fastbin_pointer_move_2.32_2.36.c`](./poc_fastbin_pointer_move_2.32_2.36.c) | 可执行的 C 源码模型 | 逐句验证 fastbin size 的反算方式、safe-linking 编码，以及两段式的指针搬运 |
 | [`check_build_mapping_2.32.c`](./check_build_mapping_2.32.c) | C 语言运行时检查器，不是 PoC | 查询 `_IO_file_jumps` 的实际地址和对应映射的权限 |
 
-这里并不是要声称存在一个“适用于所有 glibc 2.32 构建的完整 Crust C exploit”。原版手法最终的 FSOP 明确依赖自编译构建的链接布局、可写映射、精确的 gadget 以及寄存器状态约束；原作者在六个自编译的 2.32 构建上做过测试，其中最终能跑通的链只有一个。既然没有给定那份具体的 libc/ld Build ID，硬写一个固定偏移的版本反而会误导读者。
+这不是一份"适用于所有 glibc 2.32 构建的完整 Crust C exploit"。原版手法的最终 FSOP 依赖自编译构建的链接布局、可写映射、精确 gadget 和寄存器状态约束。原作者测过六个自编译的 2.32 构建，最终跑通的链只有一个。没有那份具体的 libc/ld Build ID，硬写固定偏移只会误导读者。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -21,6 +21,13 @@
 | 最终输出原语 | 无泄露组合链，最终取得 CF/RCE |
 | 版本边界应如何理解 | 它不是一条独立的消费路径。2.37 先封堵 House of Corrosion 的超大尺寸 fastbin 指针搬运，2.41 再删除 TSU；2.34 起还要替换 hook 终点。组件仍可用，不等于完整 Crust 仍可用。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
+
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **不是单一范围，而是必须同时具备多组精确尺寸。** Rust 前半需要两组 smallbin/tcache class（组件 PoC 使用 request `0x90`、`0x100`，物理 `0xa0`、`0x110`）和现代 largebin 对（request `0x418/0x428`，物理 `0x420/0x430`）；原链单次 request 还需至少覆盖约 `0x1b00`。
+- Corrosion 搬运阶段的每个远端槽都要按 `chunksize = 2 * (target-fastbinsY)+0x20` 单独反算，且须能准备约 `0x4000` 的安全值区域。固定套用组件 PoC 常量不能证明完整 Crust 的尺寸能力成立。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
 
 ## 三分钟运行
 
@@ -54,9 +61,9 @@ malloc: *fastbin_head = REVEAL_PTR(victim->fd)
 源槽 -> libc 可编辑中转区 -> 修改指针值 -> 目标槽
 ```
 
-它验证的是 fastbin 指针搬运这个算法本身，不是真实场景下 `_int_free` 的完整利用过程。模型把“victim 已经被重复挂入另一个远端 fastbin 头槽”当作既定输入；而在真实的 Crust 利用中，还需要靠 WAF、重叠 chunk、用来通过检查的安全值区域，以及已经被放大的 `global_max_fast` 才能建立起这个状态。
+它验证的是 fastbin 指针搬运这个算法本身，不是真实场景下 `_int_free` 的完整利用。模型把"victim 已重复挂入另一个远端 fastbin 头槽"当作既定输入；真实 Crust 中建立这个状态，还要靠 WAF、重叠 chunk、通过检查的安全值区域，以及被放大的 `global_max_fast`。
 
-这个区分很重要：模型跑成功只说明公式和搬运顺序是对的；只有在目标 libc 中真的命中了 `main_arena.fastbinsY[index]`，才能说明堆管理器这一步投递成功了。前置的 TSU+/TSU/largebin 步骤，请分别去运行 [House of Rust 的线性 C PoC](../house_of_rust/README.md)。
+这个区分很重要：模型跑通只说明公式和搬运顺序正确；在目标 libc 中真的命中 `main_arena.fastbinsY[index]`，才说明堆管理器这一步投递成功。前置的 TSU+/TSU/largebin 步骤，请运行 [House of Rust 的线性 C PoC](../house_of_rust/README.md)。
 
 ## 地址怎么计算
 
@@ -83,22 +90,22 @@ request    = (chunk size & ~7) - 0x10
 ./tools/run_in_docker.sh 2.32 house_of_crust/check_build_mapping_2.32.c
 ```
 
-程序用 `dlsym/dlvsym` 找到真实的 `_IO_file_jumps`，再去查询 `/proc/self/maps`。当前验证用的 Ubuntu glibc 2.32 显示的权限是 `rw-p`，说明“jump table 可写”这一项条件成立；但这仍然不代表原作者的最终链就能跑通，因为 gadget、相对跳转、寄存器状态和 one_gadget 约束这几项都还没有审计过。
+程序用 `dlsym/dlvsym` 找到真实的 `_IO_file_jumps`，再查询 `/proc/self/maps`。当前验证用的 Ubuntu glibc 2.32 权限是 `rw-p`，说明"jump table 可写"这一项成立；但这不代表原作者的最终链就能跑通——gadget、相对跳转、寄存器状态和 one_gadget 约束都还没审计过。
 
-接下来还要按 C 文件末尾的检查表逐项人工确认：映射确实可写、libc 地址低四位猜测命中、gadget 已经按附件反汇编重新核对、寄存器状态和最终调用约束全部匹配。光记录一个布尔值,是没办法代替这些审计工作的。
+接下来还要按 C 文件末尾的检查表逐项人工确认：映射可写、libc 地址低四位猜测命中、gadget 按附件反汇编核对过、寄存器状态和最终调用约束全部匹配。只记一个布尔值代替不了这些审计。
 
 ## 从源码看 2.37 为什么是硬边界
 
 Crust 前半复用 Rust 的两轮 TSU/largebin，随后覆盖 `global_max_fast`，把远超正常 fastbin 的 chunk 按 `fastbin_index` 投递到 libc 中远离 `fastbinsY` 的 qword。
 
-glibc 2.36 中 `global_max_fast` 是 `INTERNAL_SIZE_T`，一次内存破坏可以写入很大的 size；glibc 2.37 将它缩为 `uint8_t`。即使攻击者把这个字节写成 `0xff`，x86-64 对齐后的最大物理 chunk size 也只有 `0xf0`：
+glibc 2.36 中 `global_max_fast` 是 `INTERNAL_SIZE_T`，一次内存破坏可以写入很大的 size；glibc 2.37 把它缩成 `uint8_t`。即使攻击者把这个字节写成 `0xff`，x86-64 对齐后的最大物理 chunk size 也只有 `0xf0`：
 
 ```text
 fastbin_index(0xf0) = (0xf0 >> 4) - 2 = 13
 13 * 8 = 0x68
 ```
 
-所以写入 qword 最远只覆盖 `fastbinsY+0x68` 到 `fastbinsY+0x6f`。Crust 所需的可编辑中转区、IO 对象或链接器对象通常相隔数百到数千字节，不能靠调整 request 偏移恢复；这封堵的是“用超大尺寸 fastbin 越界索引访问远端槽位”的思想本身，而不只是一个版本偏移变化。
+所以写入 qword 最远只覆盖 `fastbinsY+0x68` 到 `fastbinsY+0x6f`。Crust 所需的可编辑中转区、IO 对象或链接器对象通常相隔数百到数千字节，调整 request 偏移无法弥补。这封堵的是"用超大尺寸 fastbin 越界索引访问远端槽位"的思想本身，不只是一个版本偏移变化。
 
 ## 原语表
 
@@ -115,8 +122,8 @@ fastbin_index(0xf0) = (0xf0 >> 4) - 2 = 13
 | 版本 | TSU/largebin 前置 | 超大尺寸 fastbin 指针搬运 | 原版最终 FSOP |
 |---|---:|---:|---:|
 | 2.32 | 是 | 算法成立，safe-linking 要两段搬运 | 仅特定 Build ID/构建条件 |
-| 2.33～2.36 | 组件仍在 | 理论窗口仍在 | 没有原作者端到端证明，必须重新适配 |
-| 2.37～2.40 | 前置组件仍可分别存在 | **硬失效**：`uint8_t global_max_fast` | 无法再组成原 Crust |
+| 2.33～2.36 | 组件还在 | 理论窗口还在 | 没有原作者端到端证明，必须重新适配 |
+| 2.37～2.40 | 前置组件还可分别存在 | **硬失效**：`uint8_t global_max_fast` | 无法再组成原 Crust |
 | 2.41+ | TSU 旧 stashing 也发生变化 | 已在 2.37 先失效 | 无法组成原 Crust |
 
 ## 资料

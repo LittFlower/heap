@@ -2,9 +2,13 @@
 
 ## 结论
 
-- 适用范围：**2.23～2.26；2.27 起经典跨尺寸链失效**。
-- 原语/效果：fastbin 中的小 victim 指向大 fake chunk，再由 malloc_consolidate 把 fake chunk 转入 unsorted/largebin。
-- 版本变化：2.26 引入 tcache，须先填满；2.27 在 malloc_consolidate 增加 fastbin_index(chunksize(p)) 一致性检查；2.43 删除 fastbin。
+**一句话**：能让 fastbin 里的小 victim 指向大 fake chunk，再触发 `malloc_consolidate`，fake chunk 就被转入 unsorted/largebin；2.27 起经典跨尺寸链失效。
+
+| 版本 | 你能拿到什么 | 备注 |
+|---|---|---|
+| 2.23～2.25 | consolidate 把大 fake chunk 转入 unsorted/largebin，取得大范围 overlap | 无 tcache |
+| **2.26** | 同上 | 引入 tcache，须先填满 |
+| 2.27～2.42 | 经典跨尺寸链失效 | `malloc_consolidate` 增加 `fastbin_index(chunksize(p))` 一致性检查；2.43 删除 fastbin |
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -17,11 +21,16 @@
 | 版本边界应如何理解 | 2.27 fastbin size/index 一致性检查硬封经典跨尺寸链。改用真实同尺寸节点再造 overlap 是另一实现，不能只改偏移。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- 必须同时控制两个不同范围：一个真实 **fastbin** victim，以及一个伪造的 **large chunk**。PoC 分别用 `malloc(0x18) -> chunksize 0x20` 和 fake `chunksize=0x420`。
+- 还需一次 large request 触发 `malloc_consolidate`（PoC 为 `0x1000`），随后用与 fake large chunk 精确匹配的请求取回它（`malloc(0x410) -> 0x420`）。不能只控制单一 request 大小。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 从源码看
 
 malloc/malloc.c 的 malloc_consolidate，对比 glibc-2.26 与 glibc-2.27。
-
-源码中仍能走到最终触发点，不等于旧利用链仍成立：投递方式、私有结构和控制流终点都要按附件 libc/ld 的 Build ID 复核。
 
 源码与背景：
 
@@ -36,7 +45,7 @@ malloc/malloc.c 的 malloc_consolidate，对比 glibc-2.26 与 glibc-2.27。
 - [`poc_2.23_2.25.c`](./poc_2.23_2.25.c)：无 tcache
 - [`poc_2.26.c`](./poc_2.26.c)：填满 tcache
 
-C 文件验证真实堆管理器路径；需要题目专属布局时，直接按 PoC 末尾的中文注释迁移，不能把局部原语成功当成脱离题目的 RCE。
+C 文件验证的是真实堆管理器路径；要迁到题目专属布局，就按 PoC 末尾的中文注释来。局部原语跑通了，不等于脱离题目就有 RCE。
 
 ## 迁移与调试
 

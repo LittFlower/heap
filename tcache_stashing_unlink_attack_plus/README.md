@@ -6,7 +6,7 @@
 - 原语效果：控制住 smallbin victim 的 `bk` 之后，就能把任意一个 0x10 对齐的地址 stash 进 tcache，再由 `malloc` 返回给我们。
 - 2.41 起失效：提交 `e2436d6` 重构了 smallbin/unsorted 小块的投递方式，经典的 stashing 循环已经不存在了。
 
-名称里的“Plus”指的不是“标准 TSU 在新版本上的写法”。标准 TSU 主要靠 `bck->fd = bin` 拿到一次 libc 地址写；TSU+ 则额外安排好 tcache 容量和两个 smallbin 节点，让循环沿着伪造的 `bk` 继续往下走，把 `target-0x10` 当成 chunk header 放进 tcache 里。
+名称里的“Plus”不是指“标准 TSU 在新版本上的写法”。标准 TSU 主要靠 `bck->fd = bin` 拿到一次 libc 地址写；TSU+ 额外安排好 tcache 容量和两个 smallbin 节点，让循环沿伪造的 `bk` 继续走，把 `target-0x10` 当作 chunk header 放进 tcache。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -19,12 +19,19 @@
 | 版本边界应如何理解 | 2.26～2.40 为排布窗口；2.41 核心 stashing 消费路径消失。加任意写去重建 tcache 头会退化成 metadata poisoning。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- 真实 victim、stash 触发和最终取回必须属于同一个物理 `chunksize < 0x400` 的 smallbin class，并让对应 tcache 留出槽位；PoC 使用 `malloc(0x100) -> chunksize 0x110`。
+- 旧循环不会校验 `target-0x10` 处的 fake `size`，所以目标附近不必真的声明 `0x110`；但 `target` 必须 0x10 对齐，fake `bk` 槽（`target+8`）必须指向可写区。更换真实 class 时仍要同步 tcache 容量与全部请求。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 前置条件
 
-1. tcache 已经存在，所以最低版本是 2.26，不是某些旧笔记里写的 2.23。
-2. 同一个 size class 里 `tcache + smallbin` 的排布要能让 smallbin 分配之后还继续做预填充。
-3. 至少有两个真实的 smallbin chunk，并且能通过 UAF/overflow 修改被遍历的 victim，把它的 `bk` 改成 `target-0x10`。
-4. `target` 要 0x10 对齐；`target+8` 会被当成伪 chunk 的 `bk`，它指向的位置必须可写。
+1. tcache 已存在，所以最低版本是 2.26，不是某些旧笔记写的 2.23。
+2. 同一 size class 里 `tcache + smallbin` 的排布要能让 smallbin 分配后继续预填充。
+3. 至少两个真实 smallbin chunk，并能通过 UAF/overflow 把被遍历 victim 的 `bk` 改成 `target-0x10`。
+4. `target` 要 0x10 对齐；`target+8` 会被当作伪 chunk 的 `bk`，指向的位置必须可写。
 5. 经典 PoC 用 `calloc` 绕开 malloc 的 tcache 快路径，直接走 smallbin 分支。
 
 ## PoC
@@ -38,15 +45,15 @@
 
 ## 从源码看
 
-关键不在 safe-linking，而在 2.40 `_int_malloc` 的 smallbin 精确尺寸分支：返回一个 victim 之后，循环会把剩下的 smallbin 节点放进 tcache，过程中会执行双向链表的 `bck->fd = bin` 更新。smallbin 的 `fd/bk` 不经过 `PROTECT_PTR` 加密；只有写入 tcache 的 `next` 才使用 safe-linking，所以 2.32 起主要是多了对齐约束，并不会单独让这个 PoC 失效。
+关键不在 safe-linking，而在 2.40 `_int_malloc` 的 smallbin 精确尺寸分支：返回一个 victim 后，循环把剩下的 smallbin 节点放进 tcache，过程中执行双向链表的 `bck->fd = bin` 更新。smallbin 的 `fd/bk` 不经过 `PROTECT_PTR` 加密，只有写入 tcache 的 `next` 才用 safe-linking。所以 2.32 起只是多了对齐约束，并不会单独让本 PoC 失效。
 
-2.41 把小块释放/预填充的路径改成了走 `tcache_put` 之后的另一套流程，原来那段没有检查的 stashing 步骤也就消失了，因此 Rust/Crust 系列手法里依赖 TSU+ 的部分也随之截止。
+2.41 把小块释放/预填充改成 `tcache_put` 之后的另一套流程，原来那段无检查的 stashing 步骤随之消失，Rust/Crust 系列手法中依赖 TSU+ 的部分也就此截止。
 
 ## 迁移提示
 
-- 先在 `_int_malloc` 打断点确认 `tcache` 剩余的容量；数量差一都会导致伪节点没被 stash 进去，或者被 `calloc` 当场返回掉。
-- `target` 指的是用户地址，所以写进 smallbin `bk` 的值是 `target-0x10`。
-- 如果 2.32 之后最终报了 `unaligned tcache chunk detected`，先查目标地址是否对齐，再查 tcache 内 safe-linking 的 `next`，别把这两套编码规则和 smallbin 的明文 `bk` 混在一起改。
+- 先在 `_int_malloc` 打断点确认 tcache 剩余容量；数量差一都会导致伪节点没被 stash，或被 `calloc` 当场返回。
+- `target` 是用户地址，写进 smallbin `bk` 的值是 `target-0x10`。
+- 2.32 后若报 `unaligned tcache chunk detected`，先查目标地址对齐，再查 tcache 内 safe-linking 的 `next`；别把 tcache 编码和 smallbin 明文 `bk` 混改。
 
 ## 资料
 

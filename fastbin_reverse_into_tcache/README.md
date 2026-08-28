@@ -17,11 +17,19 @@
 | 版本边界应如何理解 | 2.42 只是额外 size 适配；2.43 删除 fastbin→tcache refill 来源，消费路径硬失效。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- 所有真实节点、fake 节点和触发请求必须是同一个、同时可由 fastbin 与 small tcache 表示的 size class；正常 fastbin 尺寸天然满足后一点。
+- PoC 用 `malloc(0x40)`，其物理 `chunksize=0x50`；可以换 class，但填满/耗尽 tcache 的请求也必须同步更换。
+- glibc 2.42 stash/refill 会核对节点的物理 size，fake 节点不能只伪造 `next` 而漏掉与请求精确匹配的 `size`。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
 - 2.26～2.31 是明文 fd。
 - 2.32～2.41 fastbin fd 使用 safe-linking。
-- 2.42 large-tcache 链中间 next 槽可被 mangling（metadata 头仍为明文），且 stash 时增加 chunk-size 一致性检查。
+- 2.42 large-tcache 链中间 next 槽会被 mangling（metadata 头还是明文），stash 时还加了 chunk-size 一致性检查。
 - 2.43 `_int_malloc` 不再从 fastbin 分配。
 
 ## 从源码看

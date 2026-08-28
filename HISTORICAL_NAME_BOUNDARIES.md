@@ -13,7 +13,7 @@ fastbin_index(8) == -1
 
 也就是 free 一个伪造 `size=8` 的 chunk，利用负下标把 `av->max_fast` 改成 chunk 地址；再用第二个超大 fastbin 下标越界覆盖构建相关的 `arena_key`。
 
-这不是 glibc 2.23 的布局。2.23 的 `struct malloc_state` 中已没有 `max_fast` 字段；边界变成独立的文件静态变量 `global_max_fast`。因此 `fastbinsY[-1]` 不会按原论文描述命中它，`arena_key` 终点也不是可移植的现代目标。
+这不是 glibc 2.23 的布局。2.23 的 `struct malloc_state` 里已经没有 `max_fast` 字段；边界变成独立的文件静态变量 `global_max_fast`。所以 `fastbinsY[-1]` 不会按原论文描述命中它，`arena_key` 终点也不是可移植的现代目标。
 
 结论：
 
@@ -23,7 +23,7 @@ fastbin_index(8) == -1
 
 ## House of Chaos：原文不是堆管理器技术
 
-原始 *Malloc Maleficarum* 的目录确实列出 “The House of Chaos”，但该节是文章的哲学式结语；它没有漏洞前置、malloc/free 路径、元数据构造或控制原语。把标题本身当作一种 heap exploitation technique，再编造一个 PoC，是不准确的。
+原始 *Malloc Maleficarum* 的目录确实列出 "The House of Chaos"，但那节是文章的哲学式结语；它没有漏洞前置、malloc/free 路径、元数据构造或控制原语。把标题本身当成一种 heap exploitation technique，再编一个 PoC 出来，是不准确的。
 
 结论：本项目不为 House of Chaos 创建手法目录，也不把别的现代组合链重命名为 Chaos。
 

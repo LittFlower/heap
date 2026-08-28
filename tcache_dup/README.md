@@ -2,9 +2,9 @@
 
 ## 结论
 
-- 适用范围：**glibc 2.26～2.28；从 2.29 开始，直接连续两次 free 就会失效**。
-- 原语效果：让同一个 chunk 被 tcache 重复分配出来，两个指针最终指向同一块内存。
-- 前置能力：能对同一个悬空指针连续调用两次 free，中间不需要做任何 edit。
+- 适用范围：**glibc 2.26～2.28；2.29 起直接 double free 失效**。
+- 原语效果：同一 chunk 多次从 tcache 返回。
+- 前置能力：能够对同一悬挂指针连续 free。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -17,30 +17,37 @@
 | 版本边界应如何理解 | 2.29 key+链扫描硬封住“只有连续 double free”这个最小模型。若能清 key、改 size 或合并再 free，可用 Botcake/Kauri 等绕法，但已经增加输入原语。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- double-free victim 与两次取回请求必须是**同一个已启用的 tcache class**；默认环境下选任意 small-tcache 物理尺寸即可。
+- 没有固定唯一值；PoC 用 `malloc(8) -> chunksize 0x20`。若换 class，所有 free/malloc 与对应 `tc_idx` 必须同步，且不能让 chunk 先落到非 tcache 路径。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
-- 2.26 引入的初版 tcache 还没有 double-free key。
-- 2.29 的提交 `bcdaad2` 给 `tcache_entry` 加上了 key 字段，free 时如果怀疑是重复释放，就会遍历对应的 bin 检查。
+- 2.26 初版 tcache 没有 double-free key。
+- 2.29 提交 `bcdaad2` 给 `tcache_entry` 增加 key，疑似重复释放时还会遍历这个 bin。
 
 ## 从源码看
 
-`tcache_put` 会写入 `e->key`，`_int_free` 释放前先比较这个 key，再遍历链表确认是否重复。本目录的版本结论以 GNU glibc 对应 tag/提交为准，参考：[tcache 引入](https://sourceware.org/git/?p=glibc.git;a=commit;h=d5c3fafc4307c9b7a4c7d5cb381fcdbfad340bcc)、[double-free 检查](https://sourceware.org/git/?p=glibc.git;a=commit;h=bcdaad21d4635931d1bd3b54a7894276925d081d)。
+`tcache_put` 写 `e->key`；`_int_free` 比较 key 后遍历链表。本目录判断以 GNU glibc 对应 tag/提交为准：[tcache 引入](https://sourceware.org/git/?p=glibc.git;a=commit;h=d5c3fafc4307c9b7a4c7d5cb381fcdbfad340bcc)、[double-free 检查](https://sourceware.org/git/?p=glibc.git;a=commit;h=bcdaad21d4635931d1bd3b54a7894276925d081d)。
 
-版本号只代表上游基线；发行版可能回移检查，实战时请按附件的 Build ID 对照源码确认。
+版本号只代表上游基线；发行版可能回移检查。实战请按附件 Build ID 对照源码。
 
 ## PoC
 
-- [`poc_2.26_2.28.c`](./poc_2.26_2.28.c)：验证 2.26–2.28 分支，成功判据见源码头部。
+- [`poc_2.26_2.28.c`](./poc_2.26_2.28.c)：验证 2.26–2.28 分支；成功判据见源码头部。
 
-下面的 PoC 都是 x86-64 教学程序，其中的 UAF、越界或 double free 都是特意模拟出来的漏洞行为。快速验证：
+PoC 为 x86-64 教学程序，故意包含 UAF、越界或 double free。快速验证：
 
 ```bash
 # 在目录根运行；把版本和文件替换为要测的分支
 ./tools/run_in_docker.sh 2.39 tcache_dup/poc_2.26_2.28.c
 ```
 
-迁移到具体题目时，堆排布和检查绕过的思路不用改，只需要把漏洞模拟部分换成题目实际提供的 edit/UAF/overflow 原语；写死的地址和最终目标都要按题目重新计算。
+迁移时保留堆排布和检查绕过，只把漏洞模拟替换为题目的 edit/UAF/overflow；固定地址和最终目标必须重算。
 
 ## 调试
 
-通用的断点位置和排查顺序见[根目录调试顺序](../README.md#调试顺序)。
+通用断点和排查顺序见 [根目录调试顺序](../README.md#调试顺序)。

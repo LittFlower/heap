@@ -4,7 +4,9 @@
 
 - 适用范围：**printf handler 这个最终触发点从 2.23 到 2.43 一直存在；本目录用 largebin 投递的完整 PoC 覆盖到 2.41**。
 - 原语/效果：改写 `__printf_function_table` 和 `__printf_arginfo_table`，让 printf 解析格式串时间接调用我们控制的函数。
-- 版本变化：2.23～2.41 都可以用 largebin attack 投递；2.42 加固了 `nextsize` 检查，这条投递路径失效；2.43 的 `reg-printf.c`/`vfprintf-internal.c` 仍然会读这两张表，只要题目另外提供任意写，最终触发点依然可以打通。
+- 版本变化：2.23～2.41 都可以用 largebin attack 投递。
+- 2.42 加固了 `nextsize` 检查，这条投递路径失效。
+- 2.43 的 `reg-printf.c`/`vfprintf-internal.c` 还是会读这两张表；只要题目另外提供任意写，最终触发点还是能打通。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -17,11 +19,19 @@
 | 版本边界应如何理解 | 最终触发点到 2.43 仍在；2.42 只封常用的经典 largebin 投递。隐藏偏移是 Build-ID 条件，局部写到“某个可写地址”不算成功。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **printf handler 最终触发点本身不要求某个 chunk size**；只要能写两张表并触发格式串即可。
+- 2.27 的超大 fastbin 投递要为两张表分别反算精确 request；该 PoC 使用 `request = 2*(target-main_arena)-0x10` 的 `offset2size` 宏，并先放大 `global_max_fast`。它不是任意 large request，换 Build ID 后须从实际 `fastbinsY` 写入槽重新验算。
+- 现代 largebin 投递必须能准备两组物理 large chunks。PoC 分别使用 request `0x418/0x428`（物理 `0x420/0x430`）与 `0x478/0x488`（物理 `0x480/0x490`）；换值时要保证每组的 largebin 归属和“新 victim 更小”顺序仍正确。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 从源码看
 
 涉及三处源码：`stdio-common/reg-printf.c`、`vfprintf-internal.c`，以及 `malloc.c` 里 largebin 的插入逻辑。
 
-源码里仍能走到最终触发点，不代表旧的完整利用链还成立：投递方式、私有结构和控制流终点都需要按附件 libc/ld 的 Build ID 逐一复核。
+最终触发点还在，不代表旧的完整链成立：投递方式、私有结构和控制流终点都要按附件 libc/ld 的 Build ID 逐一复核。
 
 源码与背景：
 
@@ -39,11 +49,11 @@
 - [`poc_2.35.c`](./poc_2.35.c)
 - [`poc_2.37.c`](./poc_2.37.c)
 - [`poc_2.39.c`](./poc_2.39.c)
-- [`poc_2.41.c`](./poc_2.41.c)：这 5 个都绑定各自构建的实际偏移，只有真的走到 `HUSK_<version>_CALLBACK` 才算通过，不再用 one-gadget 或非交互 shell 的返回码这类模糊判据。
+- [`poc_2.41.c`](./poc_2.41.c)：这 5 个都绑定各自构建的实际偏移，只有走到 `HUSK_<version>_CALLBACK` 才算通过，不用 one-gadget 或非交互 shell 返回码这类模糊判据。
 
-[`poc_2.41.c`](./poc_2.41.c) 里的偏移对应当前验证镜像 Ubuntu 25.04 `GLIBC 2.41-6ubuntu1.2`：`main_arena=0x210ac0`、`__printf_function_table=0x212700`、`__printf_arginfo_table=0x212708`，来自 `libc6-dbg` Build ID `ae7440bbdce614e0e79280c3b2e45b1df44e639c`。题目附件不同的话必须重新计算，不要把这三个数直接当成整个 2.41 分支的 ABI。
+[`poc_2.41.c`](./poc_2.41.c) 里的偏移对应当前验证镜像 Ubuntu 25.04 `GLIBC 2.41-6ubuntu1.2`：`main_arena=0x210ac0`、`__printf_function_table=0x212700`、`__printf_arginfo_table=0x212708`，来自 `libc6-dbg` Build ID `ae7440bbdce614e0e79280c3b2e45b1df44e639c`。题目附件不同就必须重算，不要把这三个数当成整个 2.41 分支的 ABI。
 
-上面 5 个完整投递 PoC 都是用 largebin attack 先后改写两张表，不是靠官方注册 API；通用最终触发点 PoC 则反过来故意用官方 API，单独证明 2.42/2.43 仍然存在消费路径。
+上面 5 个完整投递 PoC 都用 largebin attack 先后改写两张表，不靠官方注册 API；通用最终触发点 PoC 则故意用官方 API，单独证明 2.42/2.43 还有消费路径。
 
 ## 迁移与调试
 

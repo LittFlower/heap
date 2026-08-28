@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 检查目录结构、README 引用、manifest 与 PoC 中文说明的一致性。
+# 检查目录结构、README 要求块/引用、manifest 与 PoC 中文说明的一致性。
 # 本脚本只读源码，不负责运行不同 glibc；动态回归请用 check_all.sh。
 
 set -euo pipefail
@@ -18,9 +18,23 @@ while IFS= read -r -d '' method_dir; do
   if [[ ! -f "$method_dir/README.md" ]]; then
     printf '[FAIL] 缺少 README：%s\n' "${method_dir#"$root_dir/"}" >&2
     fail=1
+    continue
+  fi
+
+  readme_file="$method_dir/README.md"
+  size_start_count=$(grep -Fc '<!-- CHUNK_SIZE_REQUIREMENTS:START -->' \
+    "$readme_file" || true)
+  size_end_count=$(grep -Fc '<!-- CHUNK_SIZE_REQUIREMENTS:END -->' \
+    "$readme_file" || true)
+  size_heading_count=$(grep -Fxc '## Chunk size 要求' "$readme_file" || true)
+  if [[ "$size_start_count" -ne 1 || "$size_end_count" -ne 1 || \
+        "$size_heading_count" -ne 1 ]]; then
+    printf '[FAIL] Chunk size 要求块缺失或重复：%s\n' \
+      "${readme_file#"$root_dir/"}" >&2
+    fail=1
   fi
 done < <(find "$root_dir" -mindepth 1 -maxdepth 1 -type d \
-  ! -name build ! -name tools ! -name '.*' -print0)
+  ! -name build ! -name tools ! -name pwn_notes ! -name '.*' -print0)
 
 # 手法目录只保留 C 教学 PoC。Python 仅用于 tools/ 下的维护脚本。
 while IFS= read -r -d '' python_file; do

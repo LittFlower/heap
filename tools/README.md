@@ -55,6 +55,6 @@ python3 tools/sync_primitive_requirements.py --check
 
 `audit_static.sh` 还会调用 `audit_markdown_links.py`：所有手法间链接必须明确
 指向目标 `README.md`，具体 `poc_*.c` 文件必须写成可点击链接，
-从而保证 VS Code 的 Markdown 预览可以直接在文档和源码之间跳转。
+这样 VS Code 的 Markdown 预览就能直接在文档和源码之间跳转。
 
-198 项矩阵已使 141 个 C PoC 均至少在一个对应 glibc 上运行。Husk 的 2.27/2.35/2.37/2.39/2.41 完整 largebin 投递链也已纳入，但其隐藏全局变量偏移仍绑定 README 所列 Build ID。复杂布局和题目迁移步骤统一放在相关 C 文件末尾，用中文注释与伪代码说明。
+198 项矩阵已经让 141 个 C PoC 都至少在一个对应 glibc 上跑过。Husk 的 2.27/2.35/2.37/2.39/2.41 完整 largebin 投递链也已纳入，但它的隐藏全局变量偏移还绑定 README 列出的 Build ID。复杂布局和题目迁移步骤统一放在相关 C 文件末尾，用中文注释与伪代码说明。

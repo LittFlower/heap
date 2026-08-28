@@ -2,11 +2,11 @@
 
 本页说明指定文章、本地笔记和 how2heap 里的名字分别对应哪个目录，以及哪些只是别名、组合链或最终触发点，不需要另建手法目录。
 
-审计日期为 **2026-08-18**。目录版本边界仍以对应 README、GNU glibc 源码和 [198 项实跑矩阵](./VALIDATION.md) 为准，本页只做名称覆盖导航。
+审计日期为 **2026-08-18**。目录版本边界还是以对应 README、GNU glibc 源码和 [198 项实跑矩阵](./VALIDATION.md) 为准，本页只做名称覆盖导航。
 
 ## `House of all` 文章
 
-[用户指定综述](https://roderickchan.github.io/zh-cn/2023-02-27-house-of-all-about-glibc-heap-exploitation/) 的 30 个 House 均已有独立目录：
+[用户指定综述](https://roderickchan.github.io/zh-cn/2023-02-27-house-of-all-about-glibc-heap-exploitation/) 的 30 个 House 都已经有了独立目录：
 
 | 原文名称 | 本项目目录 | 名称/边界提示 |
 |---|---|---|
@@ -14,7 +14,7 @@
 | Einherjar | [`house_of_einherjar/`](./house_of_einherjar/README.md) | 2.26、2.29 完整性检查分段 |
 | Force | [`house_of_force/`](./house_of_force/README.md) | 2.29 起 top/system_mem 检查终止经典链 |
 | Lore | [`house_of_lore/`](./house_of_lore/README.md) | 也由 [`small_bin_attack/`](./small_bin_attack/README.md) 汇总命名差异 |
-| Orange | [`house_of_orange/`](./house_of_orange/README.md) |堆管理器、触发器、FSOP 最终触发点分开标版本 |
+| Orange | [`house_of_orange/`](./house_of_orange/README.md) | 堆管理器、触发器、FSOP 最终触发点分开标版本 |
 | Rabbit | [`house_of_rabbit/`](./house_of_rabbit/README.md) | 经典跨尺寸 fastbin 链止于 2.26 |
 | Roman | [`house_of_roman/`](./house_of_roman/README.md) | 2.26/2.27 需 tcache 重排，2.28 起失效 |
 | Storm | [`house_of_storm/`](./house_of_storm/README.md) | 2.28 首道 unsorted 双链检查已封住 |
@@ -29,7 +29,7 @@
 | Rust | [`house_of_rust/`](./house_of_rust/README.md) | 只有 2.32 原版可称完整 Rust，其余为组件窗口 |
 | Crust | [`house_of_crust/`](./house_of_crust/README.md) | 超大尺寸 fastbin 越界索引在 2.37 已有硬边界 |
 | IO | [`house_of_io/`](./house_of_io/README.md) | 2.29～2.33 的 tcache key/leak 语境 |
-| Banana | [`house_of_banana/`](./house_of_banana/README.md) | `_dl_fini`/fake `link_map` 最终触发点|
+| Banana | [`house_of_banana/`](./house_of_banana/README.md) | `_dl_fini`/fake `link_map` 最终触发点 |
 | Kiwi | [`house_of_kiwi/`](./house_of_kiwi/README.md) | 专属 malloc-assert 触发器止于 2.35 |
 | Emma | [`house_of_emma/`](./house_of_emma/README.md) | fopencookie 回调；2.24 起 PTR_MANGLE |
 | Pig | [`house_of_pig/`](./house_of_pig/README.md) | 2.28 是旧回调与现代 str-overflow 最终触发点分界 |
@@ -39,9 +39,9 @@
 | Apple 3 | [`house_of_apple3/`](./house_of_apple3/README.md) | codecvt 最终触发点，三套 ABI |
 | Gods | [`house_of_gods/`](./house_of_gods/README.md) | 原版最小链实跑至 2.25；2.26 需 tcache/构建适配，2.27 起原版 main_arena fake-size 链硬失效 |
 | Lys | [`house_of_lys/`](./house_of_lys/README.md) | 部分文章误写为 Lyn；exit→obstack 链止于 2.36 |
-| Snake | [`house_of_snake/`](./house_of_snake/README.md) | 2.37+ printf_buffer obstack 最终触发点|
+| Snake | [`house_of_snake/`](./house_of_snake/README.md) | 2.37+ printf_buffer obstack 最终触发点 |
 
-文章发表后出现、但用户本地笔记已指向的两条新链也已补齐：[`house_of_some/`](./house_of_some/README.md) 与 [`house_of_illusion/`](./house_of_illusion/README.md)。二者原始代码汇总仓库实际名为 [Some-of-House](https://github.com/CsomePro/Some-of-House)，不是一个名为“House of House”的第三种算法。
+文章发表后出现、但用户本地笔记已指向的两条新链也已补齐：[`house_of_some/`](./house_of_some/README.md) 与 [`house_of_illusion/`](./house_of_illusion/README.md)。这两个的代码汇总仓库实际叫 [Some-of-House](https://github.com/CsomePro/Some-of-House)，不是一个名叫"House of House"的第三种算法。
 
 ## `高版本 glibc heap exploitation` 文章
 
@@ -60,7 +60,7 @@
 
 ## how2heap 2.23～2.43 差集
 
-以下以 shellphish/how2heap 提交 `02da6aa26a44e5af2a67057876d7c6669a207f56` 为快照，将 2.23～2.43 目录中出现过的示例文件去重。每一项都有语义对应，不要求目录名逐字一致：
+下面以 shellphish/how2heap 提交 `02da6aa26a44e5af2a67057876d7c6669a207f56` 为快照，把 2.23～2.43 目录中出现过的示例文件去重。每一项都有语义对应，不要求目录名逐字一致：
 
 | how2heap 示例 | 本项目目录 |
 |---|---|
@@ -89,7 +89,7 @@
 | House of Enherjar | House of Einherjar 的拼写漂移 |
 | “高版本 House of Rust” | 若没有原版完整 TSU+/largebin/FSOP/终点链，只能称 Rust 派生组件，不能把任意新题组合自动回写为原版跨版本 PoC |
 
-ALateFall 的 `fastbin_attack`、bins 与 unlink 系列分别落在 Fastbin Dup/Into Stack、各 bin attack 和 Unsafe Unlink；其 `house_of_enherjar` 属于上述拼写差异。看雪存档中的 FILE、setcontext、exit hook 和 one_gadget 内容则分别属于数据流最终触发点、控制流载体与最终落点，不会重复建成堆管理器目录。
+ALateFall 的 `fastbin_attack`、bins 与 unlink 系列分别落在 Fastbin Dup/Into Stack、各 bin attack 和 Unsafe Unlink；它的 `house_of_enherjar` 属于上面说的拼写差异。看雪存档里的 FILE、setcontext、exit hook 和 one_gadget 内容分别归到数据流最终触发点、控制流载体和最终落点，不会重复建成堆管理器目录。
 
 ## 不在 2.23～2.43 硬造 PoC 的历史名
 

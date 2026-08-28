@@ -3,8 +3,8 @@
 ## 结论
 
 - 适用范围：**glibc 2.23～2.26；2.27 起失效**。
-- 原语效果：把 `thread_arena` 劫持到一份伪造的 fake arena 上，之后这个线程发起的所有分配都会受伪 arena 控制。
-- 前置能力：需要 heap/libc 地址泄露、能发出任意大小的申请，并且能改写 main_arena.next、system_mem、narenas 这三个字段。
+- 原语效果：劫持 `thread_arena` 到 fake arena，然后控制这个线程的分配。
+- 前置能力：heap/libc 泄露、任意大小申请、可改 main_arena.next/system_mem/narenas。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -17,31 +17,39 @@
 | 版本边界应如何理解 | 已严格实跑 2.23～2.25。2.26 主要是 tcache 路由+隐藏偏移的构建适配，不能把旧 PoC 原样外推。2.27 `have_fastchunks` 令 main_arena+8 不再是可用 size，且单线程 malloc 绕 thread_arena：原版弱前置链硬失效；已有 AAW 时仍可直接投递 fake arena，但那是更强实现。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **原版要求“任意/多尺寸申请”，不能只控制一个固定 size class。** 已验证 PoC 至少使用 request `0x18/0x38/0x68/0x88/0x98/0x1f8`，对应物理 `0x20/0x40/0x70/0x90/0xa0/0x200`。
+- 这些尺寸分别用于 main_arena fastbin 重叠、binmap 和 fake arena 链，部分还由目标构建的 arena 字段偏移决定；少掉其中一种精确 request，通常不能只用等长 chunk 替换。
+- 原版还要把两次超大失败申请（PoC 传入 `0xffffffffffffffc0`）真正送到 `malloc`，借失败后的 arena retry/reuse 推进 `thread_arena`；若菜单先按上限拒绝该 request，这个触发阶段也无法复现。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
-- 2.23 和 2.24～2.26 之间，arena 相关字段的偏移与布局略有区别。
-- glibc 2.27 对 arena/fastbin 做了一致性加固，how2heap 因此把适用范围标注为 `< 2.27`；不过参考文章的表格把边界写到 2.27，存在一点歧义，本表按实际跑通的 PoC 与源码结论，把 2.26 定为最后一个可用版本。
+- 2.23 与 2.24～2.26 的 arena 字段偏移/布局略有区别。
+- glibc 2.27 的 arena/fastbin 一致性加固让 how2heap 把范围标成 `< 2.27`；参考文章表格写到 2.27 是边界歧义，本表按实际 PoC 与源码取 2.26 为末版。
 
 ## 从源码看
 
-关键函数是 `reused_arena`、`arena_get_retry`，以及 thread_arena 和伪造 malloc_state 之间的关系。本目录的判断以 GNU glibc 对应 tag/提交为准：[2.26 arena.c](https://github.com/bminor/glibc/blob/glibc-2.26/malloc/arena.c)、[上游原始说明](https://github.com/Milo-D/house-of-gods)。
+`reused_arena`、`arena_get_retry`、thread_arena 与 fake malloc_state。本目录判断以 GNU glibc 对应 tag/提交为准：[2.26 arena.c](https://github.com/bminor/glibc/blob/glibc-2.26/malloc/arena.c)、[上游原始说明](https://github.com/Milo-D/house-of-gods)。
 
 版本号只代表上游基线；发行版可能回移检查。实战请按附件 Build ID 对照源码。
 
 ## PoC
 
-- [`poc_2.23.c`](./poc_2.23.c)：验证 2.23 分支，成功判据见源码头部。
-- [`poc_2.24_2.25.c`](./poc_2.24_2.25.c)：验证 2.24～2.25 分支，成功判据见源码头部。
+- [`poc_2.23.c`](./poc_2.23.c)：验证 2.23 分支；成功判据见源码头部。
+- [`poc_2.24_2.25.c`](./poc_2.24_2.25.c)：验证 2.24–2.25 分支；成功判据见源码头部。
 
-PoC 是 x86-64 教学程序，里面故意包含 UAF、越界或 double free。快速验证方法：
+PoC 为 x86-64 教学程序，故意包含 UAF、越界或 double free。快速验证：
 
 ```bash
 # 在目录根运行；把版本和文件替换为要测的分支
 ./tools/run_in_docker.sh 2.39 house_of_gods/poc_2.24_2.25.c
 ```
 
-迁移到具体题目时，堆排布和检查绕过的思路保持不变，只需要把漏洞模拟部分换成题目实际的 edit/UAF/overflow 能力；固定写死的地址和最终目标都要重新计算。
+迁移时保留堆排布和检查绕过，只把漏洞模拟替换为题目的 edit/UAF/overflow；固定地址和最终目标必须重算。
 
 ## 调试
 
-通用的断点位置和排查顺序见 [根目录调试顺序](../README.md#调试顺序)。
+通用断点和排查顺序见 [根目录调试顺序](../README.md#调试顺序)。

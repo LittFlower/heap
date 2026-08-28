@@ -51,7 +51,7 @@ int main()
 
 	unsigned long *d = calloc(1,8);
 
-	// calloc 不使用 tcache，因此这里继续从 fastbin 取出 b，使重复节点 a 回到表头。
+	// 2.41 起 calloc 会优先使用 tcache；前面已用 7 次 malloc 把该 bin 耗尽，所以这里才继续从 fastbin 取出 b。
 	void *second = calloc(1,8);
 	assert(second == b);
 

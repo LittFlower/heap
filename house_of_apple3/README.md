@@ -2,9 +2,15 @@
 
 ## 结论
 
-- 适用范围：**glibc 2.23～2.43 的 codecvt 最终触发点均可到达**；经典 largebin 投递止于 2.41，2.42+ 必须另有 FILE 覆盖原语。
-- 原语/效果：保留合法 `_IO_wfile_jumps`，劫持 `FILE->_codecvt`，让宽字符转换路径调用 fake codecvt/gconv step 中的函数指针。
-- 关键版本：2.23～2.29 是 codecvt 直接函数表；2.30 删除该表并使用 legacy `_IO_iconv_t` union；2.31 起简化为 `step + step_data`，持续到 2.43。
+**一句话**：保留合法 `_IO_wfile_jumps`，劫持 `FILE->_codecvt`，让宽字符转换路径调用 fake codecvt/gconv step 中的函数指针。
+
+| 版本 | codecvt 布局 | 备注 |
+|---|---|---|
+| 2.23～2.29 | 直接函数表，`__codecvt_do_in` 在 `codecvt+0x18` | 不需要再伪造 `__gconv_step` |
+| 2.30 | legacy `_IO_iconv_t` union，`codecvt+0x8 → step+0x28` | `09e1b0e` 删除直接函数表，单版本过渡 |
+| **2.31～2.43** | 现代 `step + step_data`，`codecvt+0x0 → step+0x28` | `70c6e15` 简化布局，持续到 2.43 |
+
+codecvt 最终触发点 2.23～2.43 均可到达；经典 largebin 投递止于 2.41，2.42+ 必须另有 FILE 覆盖原语。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -16,6 +22,13 @@
 | 最终输出原语 | codecvt 函数指针间接调用 |
 | 版本边界应如何理解 | 2.30/2.31 是 ABI 适配；经典 largebin 2.42 结束只影响常见投递，不证明 codecvt 最终触发点失效。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
+
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **codecvt 消费端不绑定任何 heap size class。** fake FILE、codecvt、gconv step 和 step data 可放在任意足够大、可写、对齐的区域。
+- 三代 ABI 改变的是结构长度与字段偏移，不是 chunk size 范围；若前面用 largebin/AAF 投递这些对象，另行满足那条堆原语的尺寸要求。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
 
 ## 从源码看
 
@@ -55,7 +68,7 @@ struct {
 };
 ```
 
-`__gconv_step.__fct` 仍在 `step+0x28`。源码会在 `step->__shlib_handle != NULL` 时 `PTR_DEMANGLE(fct)`；常用 fake step 应令该字段为 0，才能按明文函数指针调用。
+`__gconv_step.__fct` 仍在 `step+0x28`。`step->__shlib_handle != NULL` 时源码会做 `PTR_DEMANGLE(fct)`，所以常用 fake step 应令该字段为 0，按明文函数指针调用。
 
 除 `codecvt_in` 外，原文还分析了 out/length、`_IO_wfile_underflow_mmap`、`_IO_wdo_write` 与 `_IO_wfile_sync` 等入口。它们的分支条件不同，不能只复制本目录 underflow 的 buffer 字段。
 
@@ -73,12 +86,12 @@ struct {
 - [`poc_codecvt_sink_2.30.c`](./poc_codecvt_sink_2.30.c)：`codecvt+0x8 → step+0x28` 的 legacy union；已实测精确 2.30 首发包。
 - [`poc_codecvt_sink_2.31_2.43.c`](./poc_codecvt_sink_2.31_2.43.c)：`codecvt+0x0 → step+0x28` 的现代布局；已实测 2.31/2.43。
 
-三份 C PoC 自身就是三段 fake codecvt/step 布局，并以 `fgetwc == L'3'` 和回调次数作为严格成功判据；无需再生成脱离消费路径的静态字节串。
+三份 C PoC 自身就是三段 fake codecvt/step 布局，以 `fgetwc == L'3'` 和回调次数作为严格成功判据。无需再生成脱离消费路径的静态字节串。
 
 ## 迁移与调试
 
 1. 先按版本选择三段 ABI，尤其不要把 2.30 的 `step@+0x8` 误套成 2.31 的 `+0x0`。
 2. 保留 `_IO_wfile_jumps` 或其合法 section 内偏移；按所选 underflow/out/sync 入口设置 primary 槽和 FILE 筛选字段。
-3. 若走 gconv step，令 `__shlib_handle=0`；非零时 `__fct` 需要按 pointer_guard 编码。
+3. 若走 gconv step，把 `__shlib_handle` 写成 0；非零时 `__fct` 得按 pointer_guard 编码。
 4. 在 `_IO_wfile_underflow`、`__libio_codecvt_in` 和 fake 回调处下断点，确认窄 read buffer 非空、wide read buffer 为空且输出区有效。
 5. 2.42～2.43 不要再假设经典 largebin 能把 fake FILE 投到 `_IO_list_all`；最终触发点存在与投递存在是两件事。

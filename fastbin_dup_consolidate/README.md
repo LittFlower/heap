@@ -17,10 +17,18 @@
 | 版本边界应如何理解 | 到 2.42 主要是 tcache/safe-linking 适配；2.43 无 fastbin，也无这条 consolidate 输入，核心硬失效。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- 被重复引用的 chunk 必须是 fastbin 尺寸：`MINSIZE <= chunksize <= get_max_fast()`，同一条链上的请求必须映射到同一物理 size class。
+- 还必须能发出一次会触发 `malloc_consolidate` 的 **large request**；x86-64 上要求其物理 `nb >= MIN_LARGE_SIZE (0x400)`。PoC 用 `malloc(0x400)`，物理尺寸为 `0x410`。
+- 小块和触发大块是两种不同的必需尺寸能力；大申请不是随意的 guard。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
 - 2.26+ 需要处理 tcache。
-- 2.32 的 safe-linking 不改变该 PoC 的核心，因为它不伪造任意 fd。
+- 2.32 的 safe-linking 不影响这个 PoC 的核心，它不伪造任意 fd。
 - 2.43 fastbin 收发路径删除，无法保留 fastbin 中的第二份引用。
 
 ## 从源码看

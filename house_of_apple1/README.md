@@ -2,11 +2,11 @@
 
 ## 结论
 
-- 适用范围：**glibc 2.23～2.36；2.37 起失效**。
-- 原语/效果：`_IO_wstrn_overflow` 把 fake `_IO_wstrnfile::overflow_buf` 的已知地址写入攻击者指定的 `_IO_wide_data`，一次触发产生 8 个相关指针写。
-- 版本变化：2.23 可使用任意 fake primary vtable；2.24～2.36 必须让 primary vtable 指向合法的隐藏 `_IO_wstrn_jumps`；2.37 删除了该函数和 jump table。
+**一句话**：能用 fake `_IO_wstrnfile` 触发 `_IO_wstrn_overflow`，就把 `overflow_buf` 的已知地址写进攻击者指定的 `_IO_wide_data`，一次触发产生 8 个相关指针写。
 
-这里必须区分名字相近的两个函数：原始 Apple1 使用 `libio/vswprintf.c` 的 `_IO_wstrn_overflow`，不是仍然存在于 `libio/wstrops.c`、负责可扩容宽字符串流的 `_IO_wstr_overflow`。因此，旧文章在 2022 年写的“所有版本”不能外推到 2.37～2.43。
+- 适用范围：**glibc 2.23～2.36；2.37 删除了该函数和 jump table，硬失效**。
+- 2.23 可使用任意 fake primary vtable；2.24～2.36 必须让 primary vtable 指向合法的隐藏 `_IO_wstrn_jumps`。
+- 注意区分两个名字相近的函数：原始 Apple1 用的是 `libio/vswprintf.c` 的 `_IO_wstrn_overflow`，不是 `libio/wstrops.c` 中负责可扩容宽字符串流的 `_IO_wstr_overflow`。旧文章 2022 年写的“所有版本”不能外推到 2.37～2.43。
 
 <!-- PRIMITIVE_REQUIREMENTS:START -->
 ## 原语要求与版本边界
@@ -18,6 +18,13 @@
 | 最终输出原语 | 一次产生 8 个互相关联的已知地址指针写 |
 | 版本边界应如何理解 | 2.37 删除 `_IO_wstrn_overflow/_IO_wstrn_jumps`，形成消费路径硬边界；其他已知值写不等于 Apple1 存活。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
+
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- **最终 FILE 消费链不要求某个 malloc size class。** fake FILE、`_IO_wide_data` 与 `_IO_wstrnfile` 尾部只需位于足够大、可写且满足指针对齐的区域；它们可以在 heap、BSS 或其他已知可写区。
+- 若用 largebin/tcache/overlap 把这些结构投递到目标，尺寸限制属于所选投递原语，应另外按对应 README 检查，不能把其 PoC 尺寸当成 Apple1 本身的要求。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
 
 ## 从源码看
 
@@ -56,11 +63,11 @@ _IO_wsetb(fp, snf->overflow_buf, snf->overflow_buf + 64, 0);
 
 fake `_IO_wstrnfile` 的完整字段关系和写入结果位于 C 文件末尾的“题目布局伪代码”，无需额外生成二进制布局文件。
 
-C PoC 为了跨发行版运行，使用上游 x86-64 本范围内 `_IO_wstrn_jumps = _IO_wfile_jumps - 0x300` 的关系；迁移到题目时必须从附件 libc 的隐藏 symbol/反汇编重新取偏移。
+C PoC 为跨发行版运行，使用上游 x86-64 本范围内 `_IO_wstrn_jumps = _IO_wfile_jumps - 0x300` 的关系。迁移到题目时必须从附件 libc 的隐藏 symbol/反汇编重新取偏移。
 
 ## 迁移与调试
 
 1. 准备 fake `_IO_wstrnfile`，`_wide_data` 指向想修改的目标结构起点。
 2. 2.24～2.36 的 primary vtable 必须是 `__libc_IO_vtables` 内的 `_IO_wstrn_jumps`；不要把 `_IO_wstr_jumps` 当成同一个表。
-3. 若用 `exit` flush 触发，仍需控制 `_IO_list_all`/链表并满足 `write_ptr > write_base` 等筛选条件；经典 largebin 投递自身只到 2.41，但 Apple1 最终触发点已先在 2.37 消失。
+3. 若用 `exit` flush 触发，还得控制 `_IO_list_all`/链表，满足 `write_ptr > write_base` 等筛选条件。经典 largebin 投递自身只到 2.41，但 Apple1 最终触发点已先在 2.37 消失。
 4. 在 `_IO_wstrn_overflow` 与 `_IO_wsetb` 下断点，先确认不会错误 `free(target+0x30)`，再接 tcache、`mp_` 或 pointer_guard 等后续链。

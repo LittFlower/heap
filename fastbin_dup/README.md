@@ -17,6 +17,13 @@
 | 版本边界应如何理解 | 2.26～2.42 是 tcache 路由与 safe-linking **适配**；2.43 删除 fastbin，形成消费路径硬边界。Botcake/tcache dup 能给相似输出，但属于另一条路径。 |
 <!-- PRIMITIVE_REQUIREMENTS:END -->
 
+<!-- CHUNK_SIZE_REQUIREMENTS:START -->
+## Chunk size 要求
+
+- A、B 和后续取回请求必须属于**同一个 fastbin size class**：物理 `chunksize` 按 `0x10` 对齐，且 `MINSIZE <= chunksize <= get_max_fast()`。
+- 没有某个唯一必选尺寸；PoC 的 `malloc(8)`/`malloc(0x18)` 都得到物理 `0x20`。换成其他 fastbin class 时，填充 tcache、guard 和所有消费请求也要一起换成同一 class。
+<!-- CHUNK_SIZE_REQUIREMENTS:END -->
+
 ## 版本变化
 
 - 2.26 引入 tcache：free 默认先进入 tcache，PoC 用填满 tcache 与 `calloc` 绕到 fastbin。
